@@ -1,0 +1,24 @@
+name = "TopOptEval"
+uuid = "a1c6ecdb-f85d-4279-9a86-dab2dc72b3d9"
+authors = ["jezekon <78500480+jezekon@users.noreply.github.com>"]
+version = "0.1.0"
+
+[deps]
+Ferrite = "c061ca5d-56c9-439f-9c0e-210fe06d3992"
+FerriteGmsh = "4f95f4f8-b27c-4ae5-9a39-ea55e634e36b"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+ReadVTK = "dc215faf-f008-4882-a9f7-a79a826fadc3"
+SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
+StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+WriteVTK = "64499a7a-5c06-52f2-abe2-ccb03c286192"
+
+[compat]
+Ferrite = "1.0.0"
+FerriteGmsh = "1.2.1"
+LinearAlgebra = "1.11.0"
+ReadVTK = "0.2.4"
+SparseArrays = "1.11.0"
+StaticArrays = "1.9.13"
+Test = "1.11.0"
+WriteVTK = "1.21.1"
