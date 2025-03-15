@@ -1,104 +1,397 @@
-# Load the ReadVTK package
-using ReadVTK
-using StaticArrays  # For creating Ferrite nodes later
+# Load necessary packages
+using Ferrite
+using LinearAlgebra
+using SparseArrays
+using WriteVTK
+using StaticArrays
+using FerriteGmsh  # Required for parsing GMSH (.msh) files
 
-# Set the path to your VTU file
-vtu_file = "data/cantilever_beam_volume_mesh.vtu"
+"""
+    create_material_model(youngs_modulus::Float64, poissons_ratio::Float64)
 
-# Open the VTU file
-vtk = VTKFile(vtu_file)
-println("Successfully opened VTU file: $(typeof(vtk))")
+Vytvoří materiálové konstanty pro lineárně elastický materiál.
 
-# Extract node coordinates
-points = get_points(vtk)
-num_nodes = length(points)
-println("Number of nodes: $num_nodes")
+Parametry:
+- `youngs_modulus`: Youngův modul v Pa
+- `poissons_ratio`: Poissonovo číslo
 
-# Print first few nodes to verify
-println("First 3 nodes:")
-for i in 1:min(3, num_nodes)
-    println("Node $i: $(points[i])")
+Vrací:
+- lambda a mí koeficienty pro Hookeův zákon
+"""
+function create_material_model(youngs_modulus::Float64, poissons_ratio::Float64)
+    # Lamého koeficienty
+    λ = youngs_modulus * poissons_ratio / ((1 + poissons_ratio) * (1 - 2 * poissons_ratio))
+    μ = youngs_modulus / (2 * (1 + poissons_ratio))
+    
+    return λ, μ
 end
 
-# Extract cell types
-cell_types = get_cell_types(vtk)
-println("Number of cells: $(length(cell_types))")
+"""
+    constitutive_relation(ε, λ, μ)
 
-# Count tetrahedral elements (VTK_TETRA = 10)
-tetra_indices = findall(cell_types .== 10)
-println("Number of tetrahedral elements: $(length(tetra_indices))")
+Aplikuje lineárně elastický vztah mezi deformací a napětím (Hookeův zákon).
 
-# Extract cell connectivity
-cell_connectivity = get_cell_connectivity(vtk)
-println("Connectivity array length: $(length(cell_connectivity))")
+Parametry:
+- `ε`: tenzor deformace
+- `λ`: první Lamého koeficient
+- `μ`: druhý Lamého koeficient (smykový modul)
 
-# Extract cell offsets
-offsets = get_cell_offsets(vtk)
-println("Offsets array length: $(length(offsets))")
-
-# Extract the first few tetrahedral elements
-println("\nFirst 3 tetrahedral elements:")
-for i in 1:min(3, length(tetra_indices))
-    # Get the index of this tetrahedral element
-    tetra_idx = tetra_indices[i]
-    
-    # Get start and end indices in the connectivity array
-    start_idx = tetra_idx == 1 ? 1 : offsets[tetra_idx-1] + 1
-    end_idx = offsets[tetra_idx]
-    
-    # Extract the node indices for this tetrahedron (convert to 1-based for Julia)
-    node_indices = cell_connectivity[start_idx:end_idx] .+ 1
-    
-    println("Element $i (VTK index $(tetra_indices[i])): Nodes $node_indices")
+Vrací:
+- tenzor napětí
+"""
+function constitutive_relation(ε, λ, μ)
+    # Lineární elasticita: σ = λ*tr(ε)*I + 2μ*ε
+    return λ * tr(ε) * one(ε) + 2μ * ε
 end
 
-# Find nodes at x ≈ 0 (fixed boundary)
-tol = 1e-6
-fixed_nodes = Int[]
-for i in 1:num_nodes
-    if abs(points[i][1]) < tol
-        push!(fixed_nodes, i)
+"""
+    assemble_stiffness_matrix!(K, f, dh, cellvalues, λ, μ)
+
+Sestaví globální matici tuhosti a inicializuje vektor zatížení.
+
+Parametry:
+- `K`: globální matice tuhosti (modifikovaná in-place)
+- `f`: globální vektor zatížení (modifikovaný in-place)
+- `dh`: DofHandler
+- `cellvalues`: CellValues pro interpolaci a integraci
+- `λ`, `μ`: materiálové parametry
+
+Vrací:
+- nic (modifikuje K a f in-place)
+"""
+function assemble_stiffness_matrix!(K, f, dh, cellvalues, λ, μ)
+    # Element stiffness matrix and internal force vector
+    dim = 3  # 3D problem
+    n_basefuncs = getnbasefunctions(cellvalues)
+    ke = zeros(n_basefuncs, n_basefuncs)
+    fe = zeros(n_basefuncs)
+    
+    # Create an assembler
+    assembler = start_assemble(K, f)
+    
+    # Iterate over all cells and assemble global matrices
+    for cell in CellIterator(dh)
+        reinit!(cellvalues, cell)
+        fill!(ke, 0.0)
+        fill!(fe, 0.0)
+        
+        # Compute element stiffness matrix
+        for q_point in 1:getnquadpoints(cellvalues)
+            # Get integration weight
+            dΩ = getdetJdV(cellvalues, q_point)
+            
+            for i in 1:n_basefuncs
+                # Gradient of test function
+                ∇Ni = shape_gradient(cellvalues, q_point, i)
+                
+                for j in 1:n_basefuncs
+                    # Symmetric gradient of trial function
+                    ∇Nj = shape_gradient(cellvalues, q_point, j)
+                    
+                    # Compute the small strain tensor
+                    εi = symmetric(∇Ni)
+                    εj = symmetric(∇Nj)
+                    
+                    # Apply constitutive law to get stress tensor
+                    σ = constitutive_relation(εj, λ, μ)
+                    
+                    # Compute stiffness contribution using tensor double contraction
+                    ke[i, j] += (εi ⊡ σ) * dΩ
+                end
+            end
+        end
+        
+        # Assemble element contributions to global system
+        assemble!(assembler, celldofs(cell), ke, fe)
     end
 end
-println("\nNumber of fixed nodes (x ≈ 0): $(length(fixed_nodes))")
-if !isempty(fixed_nodes)
-    println("First few fixed nodes: $(fixed_nodes[1:min(5, length(fixed_nodes))])")
-end
 
-# Find nodes at x ≈ 60 (loaded boundary)
-load_nodes = Int[]
-for i in 1:num_nodes
-    if abs(points[i][1] - 60.0) < tol
-        push!(load_nodes, i)
+"""
+    apply_boundary_conditions!(K, f, grid, dh)
+
+Aplikuje okrajové podmínky - fixace a zatížení.
+
+Parametry:
+- `K`: globální matice tuhosti
+- `f`: globální vektor zatížení
+- `grid`: výpočetní síť
+- `dh`: DofHandler
+
+Vrací:
+- ConstraintHandler pro další použití
+"""
+function apply_boundary_conditions!(K, f, grid, dh)
+    # Extract problem dimensions
+    num_nodes = getnnodes(grid)
+    dim = 3  # 3D problem
+    
+    # 1. Fixed nodes at x=0 (with tolerance 10^-6)
+    tol = 1e-6  # Tolerance for floating point comparison
+    fixed_nodes = Set{Int}()
+    
+    # Find nodes on yz plane (x ≈ 0)
+    for node_id in 1:num_nodes
+        coord = grid.nodes[node_id].x
+        if abs(coord[1]) < tol
+            push!(fixed_nodes, node_id)
+        end
     end
-end
-println("\nNumber of load nodes (x ≈ 60): $(length(load_nodes))")
-if !isempty(load_nodes)
-    println("First few load nodes: $(load_nodes[1:min(5, length(load_nodes))])")
+    
+    println("Number of fixed nodes: $(length(fixed_nodes))")
+    
+    # Create and apply Dirichlet boundary conditions for fixed nodes
+    ch = ConstraintHandler(dh)
+    # Oprava: místo vektoru komponent zde použijeme skalární zápis pro každou komponentu
+    for d in 1:dim
+        dbc = Dirichlet(:u, fixed_nodes, (x, t) -> 0.0, d)
+        add!(ch, dbc)
+    end
+    close!(ch)
+    update!(ch, 0.0)
+    apply!(K, f, ch)
+    
+    # 2. Force of 1N applied at x=60 (with tolerance 10^-6)
+    load_nodes = Int[]
+    
+    # Find nodes on yz plane where x ≈ 60
+    for node_id in 1:num_nodes
+        coord = grid.nodes[node_id].x
+        if abs(coord[1] - 60.0) < tol
+            push!(load_nodes, node_id)
+        end
+    end
+    
+    println("Number of load nodes: $(length(load_nodes))")
+    
+    if isempty(load_nodes)
+        error("No load nodes found at x = 60.0 ± $tol. Check your mesh geometry.")
+    end
+    
+    # Apply total force of 1N, distributed evenly among the load nodes
+    # Force in +x direction
+    force_per_node = 1.0 / length(load_nodes)
+    
+    # V nové verzi Ferrite.jl přistupujeme k DOF uzlů jinak
+    # Nejprve vytvoříme set DOF pro každý uzel
+    node_to_dofs = Dict{Int, Vector{Int}}()
+    
+    # Pro každou buňku získáme mapování uzlů na DOF
+    for cell in CellIterator(dh)
+        cell_nodes = getnodes(cell)
+        cell_dofs = celldofs(cell)
+        
+        # Předpokládáme, že pro každý uzel máme 'dim' DOF (pro každý směr jeden)
+        # a že jsou uspořádány postupně pro každý uzel
+        nodes_per_cell = length(cell_nodes)
+        dofs_per_node = length(cell_dofs) ÷ nodes_per_cell
+        
+        # Pro každý uzel v buňce
+        for (local_node_idx, global_node_idx) in enumerate(cell_nodes)
+            # Vypočítáme rozsah DOF pro tento uzel v rámci buňky
+            start_dof = (local_node_idx - 1) * dofs_per_node + 1
+            end_dof = local_node_idx * dofs_per_node
+            local_dofs = cell_dofs[start_dof:end_dof]
+            
+            # Přidáme DOF do slovníku
+            if !haskey(node_to_dofs, global_node_idx)
+                node_to_dofs[global_node_idx] = local_dofs
+            end
+        end
+    end
+    
+    # Nyní aplikujeme sílu na uzly, které jsou na zatížené hraně
+    for node_id in load_nodes
+        if haskey(node_to_dofs, node_id)
+            # První DOF pro uzel je ve směru x
+            x_dof = node_to_dofs[node_id][1]
+            f[x_dof] += force_per_node
+        end
+    end
+    
+    return ch
 end
 
-println("\nNode and element data extraction complete!")
+"""
+    solve_system(K, f, ch)
 
-# The extracted data can now be used to create a Ferrite Grid:
-# 
-# using Ferrite
-# 
-# # Create Ferrite nodes
-# nodes = [Node(point) for point in points]
-# 
-# # Create Ferrite tetrahedral elements
-# elements = Tetrahedron[]
-# for i in tetra_indices
-#     # Get start and end indices in the connectivity array
-#     start_idx = i == 1 ? 1 : offsets[i-1] + 1
-#     end_idx = offsets[i]
-#     
-#     # Extract node indices (convert to 1-based)
-#     node_indices = cell_connectivity[start_idx:end_idx] .+ 1
-#     
-#     # Create a Ferrite Tetrahedron element
-#     push!(elements, Tetrahedron((node_indices...)))
-# end
-# 
-# # Create the Ferrite Grid
-# grid = Grid(elements, nodes)
+Řeší systém lineárních rovnic.
+
+Parametry:
+- `K`: globální matice tuhosti
+- `f`: globální vektor zatížení
+- `ch`: ConstraintHandler s okrajovými podmínkami
+
+Vrací:
+- vektor posunutí
+"""
+function solve_system(K, f, ch)
+    # Apply zero value to constrained dofs
+    apply_zero!(K, f, ch)
+    
+    # Solve
+    u = K \ f  # Implicit method using backslash operator
+    
+    # Calculate deformation energy: U = 0.5 * u^T * K * u
+    deformation_energy = 0.5 * dot(u, K * u)
+    
+    println("Analysis complete.")
+    println("Deformation energy: $deformation_energy J")
+    
+    return u, deformation_energy
+end
+
+"""
+    analyze_cantilever_beam(
+        grid::Grid,
+        youngs_modulus::Float64=210.0e9, 
+        poissons_ratio::Float64=0.3
+    )
+
+Provede analýzu konzolového nosníku diskretizovaného tetrahedrálními prvky.
+
+Parametry:
+- `grid`: Ferrite Grid obsahující síť
+- `youngs_modulus`: Youngův modul materiálu v Pa (default: 210 GPa, ocel)
+- `poissons_ratio`: Poissonovo číslo materiálu (default: 0.3, ocel)
+
+Vrací:
+- Trojici (vektor posunutí, deformační energie, dof_handler)
+"""
+function analyze_cantilever_beam(
+    grid::Grid,
+    youngs_modulus::Float64=210.0e9, 
+    poissons_ratio::Float64=0.3
+)
+    # Extract problem dimensions
+    num_nodes = getnnodes(grid)
+    num_cells = getncells(grid)
+    dim = 3  # 3D problem
+    
+    println("Problem size: $num_nodes nodes, $num_cells tetrahedral elements")
+    
+    # Create material model
+    λ, μ = create_material_model(youngs_modulus, poissons_ratio)
+    
+    # Create the finite element space
+    # Použití správné konstrukce pro Lagrangeovu interpolaci
+    ip = Lagrange{RefTetrahedron, 1}()^dim  # vektorová interpolace
+    
+    # Create quadrature rule
+    qr = QuadratureRule{RefTetrahedron}(2)
+    
+    # Create cell values
+    cellvalues = CellValues(qr, ip)
+    
+    # Set up the FE problem
+    dh = DofHandler(grid)
+    add!(dh, :u, ip)  # přidání pole posunutí
+    close!(dh)
+    
+    # Allocate solution vectors and system matrices
+    n_dofs = ndofs(dh)
+    println("Number of DOFs: $n_dofs")
+    K = allocate_matrix(dh)
+    f = zeros(n_dofs)
+    
+    # Assemble stiffness matrix
+    assemble_stiffness_matrix!(K, f, dh, cellvalues, λ, μ)
+    
+    # Apply boundary conditions
+    ch = apply_boundary_conditions!(K, f, grid, dh)
+    
+    # Solve the system
+    println("Solving linear system with $(n_dofs) degrees of freedom...")
+    u, deformation_energy = solve_system(K, f, ch)
+    
+    return u, deformation_energy, dh
+end
+
+"""
+    import_and_analyze_mesh(
+        mesh_file::String, 
+        youngs_modulus::Float64=210.0e9, 
+        poissons_ratio::Float64=0.3
+    )
+
+Importuje soubor sítě a provede analýzu konzolového nosníku.
+Momentálně podporuje pouze soubory .msh z GMSH.
+
+Parametry:
+- `mesh_file`: Cesta k souboru GMSH .msh
+- `youngs_modulus`: Youngův modul materiálu v Pa (default: 210 GPa, ocel)
+- `poissons_ratio`: Poissonovo číslo materiálu (default: 0.3, ocel)
+
+Vrací:
+- Trojici (vektor posunutí, deformační energie, dof_handler)
+"""
+function import_and_analyze_mesh(mesh_file::String, youngs_modulus::Float64=210.0e9, poissons_ratio::Float64=0.3)
+    # Check file extension
+    ext = lowercase(splitext(mesh_file)[2])
+    
+    if ext != ".msh"
+        error("Unsupported mesh format: $ext. Only .msh format is supported.")
+    end
+    
+    println("Importing mesh from $mesh_file...")
+    
+    # Import the GMSH .msh file using FerriteGmsh
+    grid = FerriteGmsh.togrid(mesh_file)
+    
+    # Analyze the mesh
+    return analyze_cantilever_beam(grid, youngs_modulus, poissons_ratio)
+end
+
+"""
+    export_results(
+        displacements::Vector{Float64}, 
+        dh::DofHandler, 
+        output_file::String
+    )
+
+Exportuje výsledky FEM analýzy do VTK souboru pro vizualizaci.
+
+Parametry:
+- `displacements`: Vektor řešení obsahující posunutí
+- `dh`: DofHandler použitý při analýze
+- `output_file`: Cesta k výstupnímu souboru
+"""
+function export_results(displacements::Vector{Float64}, dh::DofHandler, output_file::String)
+    println("Exporting results to $output_file...")
+    
+    # Create a VTK file to visualize the results
+    vtk_file = VTKGridFile(output_file, dh)
+    
+    # Add displacement field to the VTK file
+    write_solution(vtk_file, dh, displacements)
+    
+    # Write the results
+    close(vtk_file)
+    println("Results exported successfully.")
+end
+
+"""
+    main()
+
+Hlavní funkce pro analýzu konzolového nosníku s tetrahedrálními prvky.
+"""
+function main()
+    println("FEM Analysis of Cantilever Beam with Tetrahedral Elements")
+    println("=========================================================")
+    
+    # Mesh file to analyze
+    mesh_file = "data/cantilever_beam_volume_mesh.msh"
+    println("Processing $mesh_file...")
+    
+    # Run the analysis
+    displacements, energy, dh = import_and_analyze_mesh(mesh_file)
+    
+    # Export results for visualization
+    export_results(displacements, dh, "cantilever_beam_results")
+    
+    println("Final deformation energy: $energy J")
+    
+    return displacements, energy
+end
+
+
+    main()
