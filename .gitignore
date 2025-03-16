@@ -1,1 +1,7 @@
 *.png
+*jld2
+*vtr
+*vtu
+*vtk
+
+!data/*.vtu
