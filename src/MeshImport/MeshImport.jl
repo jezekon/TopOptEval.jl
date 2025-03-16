@@ -42,9 +42,6 @@ function import_mesh(mesh_file::String)
         # Create Ferrite nodes from points (transpose to iterate over columns)
         nodes = [Ferrite.Node(Vec{3}(points[:, i])) for i in 1:size(points, 2)]
         
-        # Create Ferrite cells from VTK cells
-        ferrite_cells = Ferrite.AbstractCell[]
-        
         # Process connectivity, offsets, and types from vtk_cells
         connectivity = vtk_cells.connectivity
         offsets = vtk_cells.offsets
@@ -53,37 +50,71 @@ function import_mesh(mesh_file::String)
         # Create start offsets for cell connectivity indexing
         start_indices = vcat(1, offsets[1:end-1] .+ 1)
         
+        # Group cells by type to create homogeneous grids
+        tetrahedron_cells = Ferrite.Tetrahedron[]
+        hexahedron_cells = Ferrite.Hexahedron[]
+        triangle_cells = Ferrite.Triangle[]
+        quadrilateral_cells = Ferrite.Quadrilateral[]
+        line_cells = Ferrite.Line[]
+        
+        # Keep track of the dominant cell type
+        cell_counts = Dict{Int, Int}()
+        
         for i in 1:length(types)
             # Get connectivity indices for this cell
             conn_indices = start_indices[i]:offsets[i]
             cell_conn = connectivity[conn_indices]
             
-            # Map VTK cell types to Ferrite cell types
-            # Reference: https://vtk.org/doc/nightly/html/vtkCellType_8h_source.html
+            # Update cell type count
             vtk_type = types[i]
+            cell_counts[vtk_type] = get(cell_counts, vtk_type, 0) + 1
             
             # VTK_TETRA = 10
             if vtk_type == 10
-                push!(ferrite_cells, Ferrite.Tetrahedron(Tuple(cell_conn)))
+                push!(tetrahedron_cells, Ferrite.Tetrahedron(Tuple(cell_conn)))
             # VTK_HEXAHEDRON = 12
             elseif vtk_type == 12
-                push!(ferrite_cells, Ferrite.Hexahedron(Tuple(cell_conn)))
+                push!(hexahedron_cells, Ferrite.Hexahedron(Tuple(cell_conn)))
             # VTK_TRIANGLE = 5
             elseif vtk_type == 5
-                push!(ferrite_cells, Ferrite.Triangle(Tuple(cell_conn)))
+                push!(triangle_cells, Ferrite.Triangle(Tuple(cell_conn)))
             # VTK_QUAD = 9
             elseif vtk_type == 9
-                push!(ferrite_cells, Ferrite.Quadrilateral(Tuple(cell_conn)))
+                push!(quadrilateral_cells, Ferrite.Quadrilateral(Tuple(cell_conn)))
             # VTK_LINE = 3
             elseif vtk_type == 3
-                push!(ferrite_cells, Ferrite.Line(Tuple(cell_conn)))
+                push!(line_cells, Ferrite.Line(Tuple(cell_conn)))
             else
                 @warn "Unsupported VTK cell type: $vtk_type, skipping"
             end
         end
         
-        # Create Ferrite grid from nodes and cells
-        grid = Ferrite.Grid(ferrite_cells, nodes)
+        # Create a grid with the most common cell type
+        if !isempty(cell_counts)
+            dominant_type = argmax(cell_counts)
+            println("  Dominant cell type: $dominant_type")
+            
+            if dominant_type == 10 && !isempty(tetrahedron_cells)
+                grid = Ferrite.Grid(tetrahedron_cells, nodes)
+                println("  Created grid with $(length(tetrahedron_cells)) Tetrahedron cells")
+            elseif dominant_type == 12 && !isempty(hexahedron_cells)
+                grid = Ferrite.Grid(hexahedron_cells, nodes)
+                println("  Created grid with $(length(hexahedron_cells)) Hexahedron cells")
+            elseif dominant_type == 5 && !isempty(triangle_cells)
+                grid = Ferrite.Grid(triangle_cells, nodes)
+                println("  Created grid with $(length(triangle_cells)) Triangle cells")
+            elseif dominant_type == 9 && !isempty(quadrilateral_cells)
+                grid = Ferrite.Grid(quadrilateral_cells, nodes)
+                println("  Created grid with $(length(quadrilateral_cells)) Quadrilateral cells")
+            elseif dominant_type == 3 && !isempty(line_cells)
+                grid = Ferrite.Grid(line_cells, nodes)
+                println("  Created grid with $(length(line_cells)) Line cells")
+            else
+                error("No supported cell types found in the mesh")
+            end
+        else
+            error("No cells found in the mesh")
+        end
         
         # Try to import cell data if present
         try
