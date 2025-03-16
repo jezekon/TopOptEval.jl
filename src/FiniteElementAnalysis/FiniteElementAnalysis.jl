@@ -8,7 +8,8 @@ using StaticArrays
 # Exported functions
 export create_material_model, setup_problem, assemble_stiffness_matrix!,
        select_nodes_by_plane, select_nodes_by_circle, get_node_dofs,
-       apply_fixed_boundary!, apply_sliding_boundary!, apply_force!, solve_system
+       apply_fixed_boundary!, apply_sliding_boundary!, apply_force!, solve_system,
+       calculate_stresses
 
 """
     create_material_model(youngs_modulus::Float64, poissons_ratio::Float64)
@@ -405,19 +406,81 @@ function apply_force!(f, dh, nodes, force_vector)
 end
 
 """
-    solve_system(K, f, constraints...)
+    calculate_stresses(u, dh, cellvalues, λ, μ)
 
-Solves the system of linear equations with multiple constraint handlers.
+Calculate stress field from displacement solution.
+
+Parameters:
+- `u`: displacement vector
+- `dh`: DofHandler
+- `cellvalues`: CellValues for interpolation and integration
+- `λ`, `μ`: material parameters
+
+Returns:
+- Dictionary mapping cell IDs to stress tensors at quadrature points
+"""
+function calculate_stresses(u, dh, cellvalues, λ, μ)
+    # Initialize storage for stresses
+    # We'll store stresses at quadrature points for each cell
+    stress_field = Dict{Int, Vector{SymmetricTensor{2, 3, Float64}}}()
+    
+    # For each cell, calculate stresses at quadrature points
+    for cell in CellIterator(dh)
+        cell_id = cellid(cell)
+        cell_dofs = celldofs(cell)
+        
+        # Get displacements for this cell
+        u_cell = u[cell_dofs]
+        
+        # Initialize cell values for this cell
+        reinit!(cellvalues, cell)
+        
+        # Initialize storage for stress at each quadrature point
+        n_qpoints = getnquadpoints(cellvalues)
+        cell_stresses = Vector{SymmetricTensor{2, 3, Float64}}(undef, n_qpoints)
+        
+        # Compute stresses at each quadrature point
+        for q_point in 1:n_qpoints
+            # Calculate strain from displacement gradients
+            # For a vector-valued field, function_gradient returns a tensor
+            grad_u = function_gradient(cellvalues, q_point, u_cell)
+            
+            # Calculate small strain tensor
+            ε = symmetric(grad_u)
+            
+            # Calculate stress using constitutive relation
+            σ = constitutive_relation(ε, λ, μ)
+            
+            # Store stress for this quadrature point
+            cell_stresses[q_point] = σ
+        end
+        
+        # Store stresses for this cell
+        stress_field[cell_id] = cell_stresses
+    end
+    
+    println("Stress calculation complete")
+    return stress_field
+end
+
+"""
+    solve_system(K, f, dh, cellvalues, λ, μ, constraints...)
+
+Solves the system of linear equations with multiple constraint handlers
+and calculates stresses.
 
 Parameters:
 - `K`: global stiffness matrix
 - `f`: global load vector
+- `dh`: DofHandler
+- `cellvalues`: CellValues for interpolation and integration
+- `λ`, `μ`: material parameters
 - `constraints...`: ConstraintHandlers with boundary conditions
 
 Returns:
-- displacement vector and deformation energy
+- displacement vector, deformation energy, and stress field
 """
-function solve_system(K, f, constraints...)
+function solve_system(K, f, dh, cellvalues, λ, μ, constraints...)
     # Apply zero value to constrained dofs for all constraint handlers
     for ch in constraints
         apply_zero!(K, f, ch)
@@ -431,10 +494,13 @@ function solve_system(K, f, constraints...)
     # Calculate deformation energy: U = 0.5 * u^T * K * u
     deformation_energy = 0.5 * dot(u, K * u)
     
+    # Calculate stresses
+    stress_field = calculate_stresses(u, dh, cellvalues, λ, μ)
+    
     println("Analysis complete")
     println("Deformation energy: $deformation_energy J")
     
-    return u, deformation_energy
+    return u, deformation_energy, stress_field
 end
 
 end # module
