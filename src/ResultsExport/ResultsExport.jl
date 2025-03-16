@@ -5,7 +5,7 @@ using WriteVTK
 using LinearAlgebra  # Add this import for eigvals function
 using Tensors        # Add this for stress tensor operations
 
-export export_results
+export export_results, export_boundary_conditions
 
 """
     export_results(displacements::Vector{Float64}, 
@@ -86,6 +86,51 @@ function export_results(stress_field::Dict{Int64, Vector{T}},
     end
     
     println("Stress results exported successfully to $(output_file).vtu")
+end
+
+"""
+    export_boundary_conditions(grid::Grid, dh::DofHandler, fixed_nodes::Set{Int}, 
+                              force_nodes::Set{Int}, output_file::String)
+
+Exportuje síť s označenými okrajovými podmínkami do VTU souboru.
+
+Parametry:
+- `grid`: Výpočetní síť
+- `dh`: DofHandler ze setupu problému
+- `fixed_nodes`: Množina ID uzlů s pevnou okrajovou podmínkou
+- `force_nodes`: Množina ID uzlů s aplikovanou silou
+- `output_file`: Cesta k výstupnímu souboru (bez přípony)
+
+Pro vizualizaci v ParaView:
+- 0: Bez okrajové podmínky
+- 1: Pevná okrajová podmínka (fixed)
+- 2: Aplikovaná síla (force)
+"""
+function export_boundary_conditions(grid::Grid, dh::DofHandler, 
+                                   fixed_nodes::Set{Int}, force_nodes::Set{Int}, 
+                                   output_file::String)
+    println("Exportuji síť s okrajovými podmínkami do $output_file...")
+    
+    # Inicializace pole pro data uzlů (0 = bez BC, 1 = fixed, 2 = force)
+    n_nodes = getnnodes(grid)
+    bc_data = zeros(Int, n_nodes)
+    
+    # Označení uzlů s okrajovými podmínkami
+    for node_id in fixed_nodes
+        bc_data[node_id] = 1  # Pro pevné okrajové podmínky
+    end
+    
+    for node_id in force_nodes
+        bc_data[node_id] = 2  # Pro síly
+    end
+    
+    # Vytvoření VTK souboru
+    vtk_file = VTKGridFile(output_file, dh.grid) do vtk
+        # Přidání dat o okrajových podmínkách jako pole na uzlech
+        write_point_data(vtk, bc_data, "boundary_conditions")
+    end
+    
+    println("Okrajové podmínky byly úspěšně exportovány do $(output_file).vtu")
 end
 
 end # module

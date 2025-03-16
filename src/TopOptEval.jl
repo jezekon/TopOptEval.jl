@@ -22,7 +22,7 @@ import .FiniteElementAnalysis: create_material_model, setup_problem,
        select_nodes_by_circle, apply_fixed_boundary!,
        apply_sliding_boundary!, apply_force!, solve_system,
        get_node_dofs
-import .ResultsExport: export_results
+import .ResultsExport: export_results, export_boundary_conditions
 
 end # module TopOptEval
 

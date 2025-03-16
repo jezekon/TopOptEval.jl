@@ -35,6 +35,9 @@ using TopOptEval
                 [1.0, 0.0, 0.0],   # normal direction (perpendicular to the face)
                 5.0                # radius of 5mm
             )
+
+            # Check if sets are correct:
+            export_boundary_conditions(grid, dh, fixed_nodes, force_nodes, "$(taskName)_boundary_conditions")
             
             # 6. Apply boundary conditions
             ch1 = apply_fixed_boundary!(K, f, dh, fixed_nodes)
