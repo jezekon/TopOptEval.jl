@@ -63,7 +63,8 @@ using TopOptEval
     if RUN_sdf_beam
         @testset "SDF_beam" begin
             # Task configuration
-            taskName = "beam_vfrac_04_smooth_1_Interp"
+            taskName = "beam_vfrac_04_smooth-1_Approx"
+            # taskName = "beam_vfrac_04_smooth-1_Interp"
             
             # 1. Import mesh (vtu/msh)
             grid = import_mesh("../data/$(taskName).vtu")
