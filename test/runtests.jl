@@ -4,8 +4,8 @@ using TopOptEval
 
 @testset "TopOptEval.jl" begin
     # Test configuration flags
-    RUN_lin_beam = true
-    RUN_sdf_beam = false
+    RUN_lin_beam = false
+    RUN_sdf_beam = true
     RUN_raw_beam = false
     
     if RUN_lin_beam
@@ -63,7 +63,7 @@ using TopOptEval
     if RUN_sdf_beam
         @testset "SDF_beam" begin
             # Task configuration
-            taskName = "beam_vfrac_04_smooth_1_Approx"
+            taskName = "beam_vfrac_04_smooth_1_Interp"
             
             # 1. Import mesh (vtu/msh)
             grid = import_mesh("../data/$(taskName).vtu")
@@ -80,13 +80,18 @@ using TopOptEval
             # 5. Apply boundary conditions
             fixed_nodes = select_nodes_by_plane(grid, [0.0, 0.0, 0.0], [1.0, 0.0, 0.0])
             # Force application on a circular region at x=60mm
-            force_nodes = select_nodes_by_circle(
-                grid,
-                [60.0, 0.0, 0.0],  # center point
-                [1.0, 0.0, 0.0],   # normal direction (perpendicular to the face)
-                5.0                # radius of 5mm
-            )
+            # force_nodes = select_nodes_by_circle(
+            #     grid,
+            #     [60.0, 0.0, 0.0],  # center point
+            #     [1.0, 0.0, 0.0],   # normal direction (perpendicular to the face)
+            #     5.0                # radius of 5mm
+            # )
+            force_nodes = select_nodes_by_plane(grid, [60.0, 0.0, 0.0], [-1.0, 0.0, 0.0])
+            println(length(force_nodes))
             
+            # Check if sets are correct:
+            export_boundary_conditions(grid, dh, fixed_nodes, force_nodes, "$(taskName)_boundary_conditions")
+
             # 6. Apply boundary conditions
             ch1 = apply_fixed_boundary!(K, f, dh, fixed_nodes)
             
