@@ -215,7 +215,7 @@ Returns:
 function select_nodes_by_plane(grid::Grid, 
                                point::Vector{Float64}, 
                                normal::Vector{Float64}, 
-                               tolerance::Float64=1e-6)
+                               tolerance::Float64=1e-4)
     # Normalize the normal vector
     unit_normal = normal / norm(normal)
     
