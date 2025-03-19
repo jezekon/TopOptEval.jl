@@ -4,6 +4,7 @@ module TopOptEval
 include("MeshImport/MeshImport.jl")
 include("FiniteElementAnalysis/FiniteElementAnalysis.jl")
 include("ResultsExport/ResultsExport.jl")
+include("Utils/Utils.jl")
 
 # Export submodules for direct access
 export MeshImport, FiniteElementAnalysis, ResultsExport
@@ -23,6 +24,7 @@ import .FiniteElementAnalysis: create_material_model, setup_problem,
        apply_sliding_boundary!, apply_force!, solve_system,
        get_node_dofs
 import .ResultsExport: export_results, export_boundary_conditions
+import .Utils: calculate_volume
 
 end # module TopOptEval
 
