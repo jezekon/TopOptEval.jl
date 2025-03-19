@@ -1,6 +1,7 @@
 using Test
 using LinearAlgebra  # Add this import for eigvals function
 using TopOptEval
+using TopOptEval.Utils
 
 @testset "TopOptEval.jl" begin
     # Test configuration flags
@@ -14,8 +15,9 @@ using TopOptEval
             taskName = "beam_linear_volume_mesh"
             
             # 1. Import mesh (vtu/msh)
-            # grid = import_mesh("../data/$(taskName).vtu")
-            grid = import_mesh("../data/$(taskName).msh")
+            grid = import_mesh("../data/$(taskName).vtu")
+            # grid = import_mesh("../data/$(taskName).msh")
+            volume = calculate_volume(grid)
             
             # 2. Setup material model (steel)
             λ, μ = create_material_model(1.0, 0.3)
@@ -63,11 +65,12 @@ using TopOptEval
     if RUN_sdf_beam
         @testset "SDF_beam" begin
             # Task configuration
-            taskName = "beam_vfrac_04_smooth-1_Approx"
-            # taskName = "beam_vfrac_04_smooth-1_Interp"
+            taskName = "beam_vfrac_04_smooth-2_Approx"
+            # taskName = "beam_vfrac_04_smooth-2_Interp"
             
             # 1. Import mesh (vtu/msh)
             grid = import_mesh("../data/$(taskName).vtu")
+            volume = Utils.calculate_volume(grid)
             
             # 2. Setup material model (steel)
             λ, μ = create_material_model(1.0, 0.3)
