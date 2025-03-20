@@ -9,7 +9,8 @@ using StaticArrays
 export create_material_model, setup_problem, assemble_stiffness_matrix!,
        select_nodes_by_plane, select_nodes_by_circle, get_node_dofs,
        apply_fixed_boundary!, apply_sliding_boundary!, apply_force!, solve_system,
-       calculate_stresses
+       calculate_stresses, create_simp_material_model, assemble_stiffness_matrix_simp!,
+       calculate_stresses_simp, solve_system_simp
 
 """
     create_material_model(youngs_modulus::Float64, poissons_ratio::Float64)
@@ -502,5 +503,208 @@ function solve_system(K, f, dh, cellvalues, λ, μ, constraints...)
     
     return u, deformation_energy, stress_field
 end
+
+"""
+    create_simp_material_model(E0::Float64, nu::Float64, Emin::Float64=1e-9, p::Float64=3.0)
+
+Creates a material model using the SIMP (Solid Isotropic Material with Penalization) approach.
+
+Parameters:
+- `E0`: Base material Young's modulus
+- `nu`: Poisson's ratio
+- `Emin`: Minimum Young's modulus (default: 1e-9)
+- `p`: Penalization power (default: 3.0)
+
+Returns:
+- Function mapping density to Lamé parameters (λ, μ)
+"""
+function create_simp_material_model(E0::Float64, nu::Float64, Emin::Float64=1e-9, p::Float64=3.0)
+    function material_for_density(density::Float64)
+        # SIMP model: E(ρ) = Emin + (E0 - Emin) * ρ^p
+        E = Emin + (E0 - Emin) * density^p
+        
+        # Calculate Lamé parameters
+        λ = E * nu / ((1 + nu) * (1 - 2 * nu))
+        μ = E / (2 * (1 + nu))
+        
+        return λ, μ
+    end
+    
+    return material_for_density
+end
+
+"""
+    assemble_stiffness_matrix_simp!(K, f, dh, cellvalues, material_model, density_data)
+
+Assembles the global stiffness matrix using variable material properties based on element density.
+
+Parameters:
+- `K`: global stiffness matrix (modified in-place)
+- `f`: global load vector (modified in-place)
+- `dh`: DofHandler
+- `cellvalues`: CellValues for interpolation and integration
+- `material_model`: Function mapping density to material parameters (λ, μ)
+- `density_data`: Vector with density values for each cell
+
+Returns:
+- nothing (modifies K and f in-place)
+"""
+function assemble_stiffness_matrix_simp!(K, f, dh, cellvalues, material_model, density_data)
+    # Element stiffness matrix and internal force vector
+    n_basefuncs = getnbasefunctions(cellvalues)
+    ke = zeros(n_basefuncs, n_basefuncs)
+    fe = zeros(n_basefuncs)
+    
+    # Create an assembler
+    assembler = start_assemble(K, f)
+    
+    # Iterate over all cells and assemble global matrices
+    for cell in CellIterator(dh)
+        reinit!(cellvalues, cell)
+        fill!(ke, 0.0)
+        fill!(fe, 0.0)
+        
+        # Get cell ID and density
+        cell_id = cellid(cell)
+        density = density_data[cell_id]
+        
+        # Get material parameters for this density
+        λ, μ = material_model(density)
+        
+        # Compute element stiffness matrix
+        for q_point in 1:getnquadpoints(cellvalues)
+            # Get integration weight
+            dΩ = getdetJdV(cellvalues, q_point)
+            
+            for i in 1:n_basefuncs
+                # Gradient of test function
+                ∇Ni = shape_gradient(cellvalues, q_point, i)
+                
+                for j in 1:n_basefuncs
+                    # Symmetric gradient of trial function
+                    ∇Nj = shape_gradient(cellvalues, q_point, j)
+                    
+                    # Compute the small strain tensor
+                    εi = symmetric(∇Ni)
+                    εj = symmetric(∇Nj)
+                    
+                    # Apply constitutive law to get stress tensor
+                    σ = constitutive_relation(εj, λ, μ)
+                    
+                    # Compute stiffness contribution using tensor double contraction
+                    ke[i, j] += (εi ⊡ σ) * dΩ
+                end
+            end
+        end
+        
+        # Assemble element contributions to global system
+        assemble!(assembler, celldofs(cell), ke, fe)
+    end
+    
+    println("Stiffness matrix assembled successfully with variable material properties")
+end
+
+"""
+    calculate_stresses_simp(u, dh, cellvalues, material_model, density_data)
+
+Calculate stress field from displacement solution, using variable material properties.
+
+Parameters:
+- `u`: displacement vector
+- `dh`: DofHandler
+- `cellvalues`: CellValues for interpolation and integration
+- `material_model`: Function mapping density to material parameters (λ, μ)
+- `density_data`: Vector with density values for each cell
+
+Returns:
+- Dictionary mapping cell IDs to stress tensors at quadrature points
+"""
+function calculate_stresses_simp(u, dh, cellvalues, material_model, density_data)
+    # Initialize storage for stresses
+    stress_field = Dict{Int, Vector{SymmetricTensor{2, 3, Float64}}}()
+    
+    # For each cell, calculate stresses at quadrature points
+    for cell in CellIterator(dh)
+        cell_id = cellid(cell)
+        cell_dofs = celldofs(cell)
+        
+        # Get displacements for this cell
+        u_cell = u[cell_dofs]
+        
+        # Get density and material properties for this cell
+        density = density_data[cell_id]
+        λ, μ = material_model(density)
+        
+        # Initialize cell values for this cell
+        reinit!(cellvalues, cell)
+        
+        # Initialize storage for stress at each quadrature point
+        n_qpoints = getnquadpoints(cellvalues)
+        cell_stresses = Vector{SymmetricTensor{2, 3, Float64}}(undef, n_qpoints)
+        
+        # Compute stresses at each quadrature point
+        for q_point in 1:n_qpoints
+            # Calculate strain from displacement gradients
+            grad_u = function_gradient(cellvalues, q_point, u_cell)
+            
+            # Calculate small strain tensor
+            ε = symmetric(grad_u)
+            
+            # Calculate stress using constitutive relation
+            σ = constitutive_relation(ε, λ, μ)
+            
+            # Store stress for this quadrature point
+            cell_stresses[q_point] = σ
+        end
+        
+        # Store stresses for this cell
+        stress_field[cell_id] = cell_stresses
+    end
+    
+    println("Stress calculation complete with variable material properties")
+    return stress_field
+end
+
+"""
+    solve_system_simp(K, f, dh, cellvalues, material_model, density_data, constraints...)
+
+Solves the system of linear equations with multiple constraint handlers
+and calculates stresses, using variable material properties.
+
+Parameters:
+- `K`: global stiffness matrix
+- `f`: global load vector
+- `dh`: DofHandler
+- `cellvalues`: CellValues for interpolation and integration
+- `material_model`: Function mapping density to material parameters (λ, μ)
+- `density_data`: Vector with density values for each cell
+- `constraints...`: ConstraintHandlers with boundary conditions
+
+Returns:
+- displacement vector, deformation energy, and stress field
+"""
+function solve_system_simp(K, f, dh, cellvalues, material_model, density_data, constraints...)
+    # Apply zero value to constrained dofs for all constraint handlers
+    for ch in constraints
+        apply_zero!(K, f, ch)
+    end
+    
+    println("Solving linear system...")
+    
+    # Solve
+    u = K \ f  # Implicit method using backslash operator
+    
+    # Calculate deformation energy: U = 0.5 * u^T * K * u
+    deformation_energy = 0.5 * dot(u, K * u)
+    
+    # Calculate stresses
+    stress_field = calculate_stresses_simp(u, dh, cellvalues, material_model, density_data)
+    
+    println("Analysis complete")
+    println("Deformation energy: $deformation_energy J")
+    
+    return u, deformation_energy, stress_field
+end
+
 
 end # module
