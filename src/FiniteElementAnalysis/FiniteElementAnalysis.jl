@@ -530,7 +530,7 @@ Parameters:
 Returns:
 - Function mapping density to Lamé parameters (λ, μ)
 """
-function create_simp_material_model(E0::Float64, nu::Float64, Emin::Float64=1e-9, p::Float64=3.0)
+function create_simp_material_model(E0::Float64, nu::Float64, Emin::Float64=1e-6, p::Float64=3.0)
     function material_for_density(density::Float64)
         # SIMP model: E(ρ) = Emin + (E0 - Emin) * ρ^p
         E = Emin + (E0 - Emin) * density^p
