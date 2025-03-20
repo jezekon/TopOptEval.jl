@@ -54,6 +54,7 @@ end
     setup_problem(grid::Grid, interpolation_order::Int=1)
 
 Sets up the finite element problem for the given grid.
+Automatically detects the cell type (tetrahedron or hexahedron) and creates appropriate interpolation.
 
 Parameters:
 - `grid`: Computational mesh (Ferrite Grid)
@@ -69,11 +70,21 @@ Returns:
 function setup_problem(grid::Grid, interpolation_order::Int=1)
     dim = 3  # 3D problem
     
-    # Create the finite element space
-    ip = Lagrange{RefTetrahedron, interpolation_order}()^dim  # vector interpolation
+    # Determine the cell type from the grid
+    # We need to find what type of cells are in the grid
+    # Get the first cell to determine the type
+    cell_type = typeof(getcells(grid, 1))
     
-    # Create quadrature rule
-    qr = QuadratureRule{RefTetrahedron}(2)
+    # Choose appropriate reference shape based on cell type
+    if cell_type <: Ferrite.Hexahedron
+        println("Setting up problem with hexahedral elements")
+        ip = Lagrange{RefHexahedron, interpolation_order}()^dim  # vector interpolation for hexahedrons
+        qr = QuadratureRule{RefHexahedron}(2)  # quadrature rule for hexahedrons
+    else  # Default to tetrahedron
+        println("Setting up problem with tetrahedral elements")
+        ip = Lagrange{RefTetrahedron, interpolation_order}()^dim  # vector interpolation for tetrahedrons
+        qr = QuadratureRule{RefTetrahedron}(2)  # quadrature rule for tetrahedrons
+    end
     
     # Create cell values
     cellvalues = CellValues(qr, ip)
@@ -91,6 +102,7 @@ function setup_problem(grid::Grid, interpolation_order::Int=1)
     
     return dh, cellvalues, K, f
 end
+
 
 """
     assemble_stiffness_matrix!(K, f, dh, cellvalues, λ, μ)
