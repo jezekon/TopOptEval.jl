@@ -5,8 +5,8 @@ using TopOptEval.Utils
 
 @testset "TopOptEval.jl" begin
     # Test configuration flags
-    RUN_lin_beam = false
-    RUN_sdf_beam = false
+    RUN_lin_beam = true
+    RUN_sdf_beam = true
     RUN_raw_beam = true
     
     if RUN_lin_beam
@@ -65,8 +65,8 @@ using TopOptEval.Utils
     if RUN_sdf_beam
         @testset "SDF_beam" begin
             # Task configuration
-            taskName = "beam_vfrac_04_smooth-2_Approx"
-            # taskName = "beam_vfrac_04_smooth-2_Interp"
+            taskName = "beam_vfrac_04_smooth-1_Approx"
+            # taskName = "beam_vfrac_04_smooth-1_Interp"
             
             # 1. Import mesh (vtu/msh)
             grid = import_mesh("../data/$(taskName).vtu")
@@ -124,10 +124,10 @@ using TopOptEval.Utils
             
             # 1. Import mesh
             grid = import_mesh("../data/$(taskName).vtu")
-            # volume = Utils.calculate_volume(grid)
             
             # 2. Extract density data
             density_data = extract_cell_density("../data/$(taskName).vtu")
+            volume = Utils.calculate_volume(grid, density_data)
             
             # 3. Setup material model (SIMP)
             # Base properties
