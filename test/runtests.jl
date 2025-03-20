@@ -127,13 +127,13 @@ using TopOptEval.Utils
             # volume = Utils.calculate_volume(grid)
             
             # 2. Extract density data
-            density_data = MeshImport.extract_cell_density("../data/$(taskName).vtu")
+            density_data = extract_cell_density("../data/$(taskName).vtu")
             
             # 3. Setup material model (SIMP)
             # Base properties
             E0 = 1.0  # Base Young's modulus
             nu = 0.3  # Poisson's ratio
-            Emin = 1e-9  # Minimum Young's modulus
+            Emin = 1e-8  # Minimum Young's modulus
             p = 3.0  # Penalization power
             
             # Create SIMP material model
@@ -147,8 +147,14 @@ using TopOptEval.Utils
             
             # 6. Apply boundary conditions
             fixed_nodes = select_nodes_by_plane(grid, [0.0, 0.0, 0.0], [1.0, 0.0, 0.0])
-            force_nodes = select_nodes_by_plane(grid, [60.0, 0.0, 0.0], [-1.0, 0.0, 0.0])
+            # force_nodes = select_nodes_by_plane(grid, [60.0, 0.0, 0.0], [-1.0, 0.0, 0.0])
             
+            force_nodes = select_nodes_by_circle(
+                grid,
+                [60.0, 0.0, 2.0],  # center point
+                [1.0, 0.0, 0.0],   # normal direction (perpendicular to the face)
+                4.0                # radius of 5mm
+            )
             # Check if sets are correct:
             export_boundary_conditions(grid, dh, fixed_nodes, force_nodes, "$(taskName)_boundary_conditions")
             
