@@ -3,7 +3,7 @@ module MeshImport
 using Ferrite
 using FerriteGmsh  # Required for parsing GMSH (.msh) files
 using ReadVTK      # Required for parsing VTK XML formats (.vtu files)
-export import_mesh
+export import_mesh, extract_cell_density
     
 """
     import_mesh(mesh_file::String)
@@ -154,5 +154,54 @@ function import_mesh(mesh_file::String)
     return grid
 end
 
+"""
+    extract_cell_density(mesh_file::String)
+
+Extracts density/volume fraction data from a VTU file.
+
+Parameters:
+- `mesh_file`: Path to the mesh file (.vtu)
+
+Returns:
+- Vector of density values for each cell
+"""
+function extract_cell_density(mesh_file::String)
+    # Check file extension
+    ext = lowercase(splitext(mesh_file)[2])
+    
+    if ext != ".vtu"
+        error("Density extraction is only supported for VTU files")
+    end
+    
+    density_data = nothing
+    
+    try
+        # Read the VTU file
+        vtk_file = ReadVTK.VTKFile(mesh_file)
+        
+        # Try to get cell data
+        vtk_cell_data = ReadVTK.get_cell_data(vtk_file)
+        
+        # Look for density data (try common names)
+        density_field_names = ["density", "rho", "Density", "DENSITY", "volfrac", "VolFrac", "vol_frac"]
+        
+        for name in density_field_names
+            if name in ReadVTK.keys(vtk_cell_data)
+                density_array = ReadVTK.get_data(vtk_cell_data[name])
+                density_data = collect(density_array)
+                println("  Extracted density data from field '$name'")
+                break
+            end
+        end
+    catch e
+        @warn "Could not extract density data: $e"
+    end
+    
+    if density_data === nothing
+        error("No density data found in the mesh file")
+    end
+    
+    return density_data
+end
 
 end # module
