@@ -5,9 +5,9 @@ using TopOptEval.Utils
 
 @testset "TopOptEval.jl" begin
     # Test configuration flags
-    RUN_lin_beam = true
+    RUN_lin_beam = false
     RUN_sdf_beam_approx = true
-    RUN_sdf_beam_interp = true
+    RUN_sdf_beam_interp = false
     RUN_raw_beam = false
 
     
@@ -50,12 +50,11 @@ using TopOptEval.Utils
             apply_force!(f, dh, collect(force_nodes), [1.0, 0.0, 0.0])
             
             # 7. Solve the system - using the new signature that includes stress calculation
-            u, energy, stress_field = solve_system(K, f, dh, cellvalues, λ, μ, ch1) # ch2, ch3, ...
-            
-            # 8. Print deformation energy
+            u, energy, stress_field, max_von_mises, max_stress_cell = solve_system(K, f, dh, cellvalues, λ, μ, ch1)
+    
+            # 8. Print deformation energy and maximum stress
             @info "Final deformation energy: $energy J"
-
-            println(typeof(stress_field))
+            @info "Maximum von Mises stress: $max_von_mises at cell $max_stress_cell"
             
             # 9. Export results to ParaView
             export_results(u, dh, "$(taskName)_u")
@@ -68,8 +67,7 @@ using TopOptEval.Utils
         @testset "SDF_beam_approx" begin
             # Task configuration
 
-            taskName = "beam_vfrac_04_smooth-1_Approx"
-            # taskName = "beam_vfrac_04_smooth-1_Interp"
+            taskName = "beam_vfrac_04_smooth-2_Approx"
             
             # 1. Import mesh (vtu/msh)
             grid = import_mesh("../data/$(taskName).vtu")
@@ -86,15 +84,7 @@ using TopOptEval.Utils
             
             # 5. Apply boundary conditions
             fixed_nodes = select_nodes_by_plane(grid, [0.0, 0.0, 0.0], [1.0, 0.0, 0.0])
-            # Force application on a circular region at x=60mm
-            # force_nodes = select_nodes_by_circle(
-            #     grid,
-            #     [60.0, 0.0, 0.0],  # center point
-            #     [1.0, 0.0, 0.0],   # normal direction (perpendicular to the face)
-            #     5.0                # radius of 5mm
-            # )
             force_nodes = select_nodes_by_plane(grid, [60.0, 0.0, 0.0], [-1.0, 0.0, 0.0])
-            println(length(force_nodes))
             
             # Check if sets are correct:
             export_boundary_conditions(grid, dh, fixed_nodes, force_nodes, "$(taskName)_boundary_conditions")
@@ -104,14 +94,13 @@ using TopOptEval.Utils
             
             # Apply 1N force in x direction to selected nodes
             apply_force!(f, dh, collect(force_nodes), [1.0, 0.0, 0.0])
-            
+             
             # 7. Solve the system - using the new signature that includes stress calculation
-            u, energy, stress_field = solve_system(K, f, dh, cellvalues, λ, μ, ch1) # ch2, ch3, ...
-            
-            # 8. Print deformation energy
+            u, energy, stress_field, max_von_mises, max_stress_cell = solve_system(K, f, dh, cellvalues, λ, μ, ch1)
+    
+            # 8. Print deformation energy and maximum stress
             @info "Final deformation energy: $energy J"
-
-            println(typeof(stress_field))
+            @info "Maximum von Mises stress: $max_von_mises at cell $max_stress_cell"
             
             # 9. Export results to ParaView
             export_results(u, dh, "$(taskName)_u")
@@ -124,7 +113,7 @@ using TopOptEval.Utils
     if RUN_sdf_beam_interp
         @testset "SDF_beam_interp" begin
             # Task configuration
-            taskName = "beam_vfrac_04_smooth-2_Interp"
+            taskName = "beam_vfrac_04_smooth-1_Interp"
             
             # 1. Import mesh (vtu/msh)
             grid = import_mesh("../data/$(taskName).vtu")
@@ -159,15 +148,14 @@ using TopOptEval.Utils
             
             # Apply 1N force in x direction to selected nodes
             apply_force!(f, dh, collect(force_nodes), [1.0, 0.0, 0.0])
-            
+             
             # 7. Solve the system - using the new signature that includes stress calculation
-            u, energy, stress_field = solve_system(K, f, dh, cellvalues, λ, μ, ch1) # ch2, ch3, ...
-            
-            # 8. Print deformation energy
+            u, energy, stress_field, max_von_mises, max_stress_cell = solve_system(K, f, dh, cellvalues, λ, μ, ch1)
+    
+            # 8. Print deformation energy and maximum stress
             @info "Final deformation energy: $energy J"
-
-            println(typeof(stress_field))
-            
+            @info "Maximum von Mises stress: $max_von_mises at cell $max_stress_cell"
+                       
             # 9. Export results to ParaView
             export_results(u, dh, "$(taskName)_u")
             export_results(stress_field, dh, "$(taskName)_stress")
@@ -223,12 +211,13 @@ using TopOptEval.Utils
             # Apply 1N force in x direction to selected nodes
             apply_force!(f, dh, collect(force_nodes), [1.0, 0.0, 0.0])
             
-            # 8. Solve the system
-            u, energy, stress_field = solve_system_simp(K, f, dh, cellvalues, material_model, density_data, ch1)
-            
-            # 9. Print deformation energy
+            # 8. Solve the system - with new return values
+            u, energy, stress_field, max_von_mises, max_stress_cell = solve_system_simp(K, f, dh, cellvalues, material_model, density_data, ch1)
+    
+            # 9. Print deformation energy and maximum stress
             @info "Final deformation energy: $energy J"
-            
+            @info "Maximum von Mises stress: $max_von_mises at cell $max_stress_cell"
+               
             # 10. Export results to ParaView
             export_results(u, dh, "$(taskName)_u")
             export_results(stress_field, dh, "$(taskName)_stress")

@@ -430,12 +430,19 @@ Parameters:
 - `λ`, `μ`: material parameters
 
 Returns:
-- Dictionary mapping cell IDs to stress tensors at quadrature points
+- Tuple with:
+  - Dictionary mapping cell IDs to stress tensors at quadrature points
+  - Maximum von Mises stress value in the model
+  - Cell ID where the maximum stress occurs
 """
 function calculate_stresses(u, dh, cellvalues, λ, μ)
     # Initialize storage for stresses
     # We'll store stresses at quadrature points for each cell
     stress_field = Dict{Int, Vector{SymmetricTensor{2, 3, Float64}}}()
+    
+    # Track maximum von Mises stress and its location
+    max_von_mises = 0.0
+    max_vm_cell_id = 0
     
     # For each cell, calculate stresses at quadrature points
     for cell in CellIterator(dh)
@@ -452,6 +459,9 @@ function calculate_stresses(u, dh, cellvalues, λ, μ)
         n_qpoints = getnquadpoints(cellvalues)
         cell_stresses = Vector{SymmetricTensor{2, 3, Float64}}(undef, n_qpoints)
         
+        # Calculate cell's average stress for von Mises calculation
+        avg_stress = zero(SymmetricTensor{2, 3, Float64})
+        
         # Compute stresses at each quadrature point
         for q_point in 1:n_qpoints
             # Calculate strain from displacement gradients
@@ -466,6 +476,24 @@ function calculate_stresses(u, dh, cellvalues, λ, μ)
             
             # Store stress for this quadrature point
             cell_stresses[q_point] = σ
+            
+            # Add to average stress
+            avg_stress += σ
+        end
+        
+        # Compute average stress for the cell
+        if n_qpoints > 0
+            avg_stress = avg_stress / n_qpoints
+            
+            # Calculate von Mises stress for this cell
+            # von Mises = sqrt(3/2 * (dev(σ) ⊡ dev(σ)))
+            cell_von_mises = sqrt(3/2 * (dev(avg_stress) ⊡ dev(avg_stress)))
+            
+            # Update maximum if this is higher
+            if cell_von_mises > max_von_mises
+                max_von_mises = cell_von_mises
+                max_vm_cell_id = cell_id
+            end
         end
         
         # Store stresses for this cell
@@ -473,7 +501,9 @@ function calculate_stresses(u, dh, cellvalues, λ, μ)
     end
     
     println("Stress calculation complete")
-    return stress_field
+    println("Maximum von Mises stress: $max_von_mises at cell $max_vm_cell_id")
+    
+    return stress_field, max_von_mises, max_vm_cell_id
 end
 
 """
@@ -491,7 +521,12 @@ Parameters:
 - `constraints...`: ConstraintHandlers with boundary conditions
 
 Returns:
-- displacement vector, deformation energy, and stress field
+- Tuple with:
+  - displacement vector
+  - deformation energy
+  - stress field dictionary
+  - maximum von Mises stress value
+  - cell ID where the maximum stress occurs
 """
 function solve_system(K, f, dh, cellvalues, λ, μ, constraints...)
     # Apply zero value to constrained dofs for all constraint handlers
@@ -508,12 +543,14 @@ function solve_system(K, f, dh, cellvalues, λ, μ, constraints...)
     deformation_energy = 0.5 * dot(u, K * u)
     
     # Calculate stresses
-    stress_field = calculate_stresses(u, dh, cellvalues, λ, μ)
+    stress_field, max_von_mises, max_stress_cell = calculate_stresses(u, dh, cellvalues, λ, μ)
+
     
     println("Analysis complete")
     println("Deformation energy: $deformation_energy J")
+    println("Maximum von Mises stress: $max_von_mises at cell $max_stress_cell")
     
-    return u, deformation_energy, stress_field
+    return u, deformation_energy, stress_field, max_von_mises, max_stress_cell
 end
 
 """
@@ -629,11 +666,18 @@ Parameters:
 - `density_data`: Vector with density values for each cell
 
 Returns:
-- Dictionary mapping cell IDs to stress tensors at quadrature points
+- Tuple with:
+  - Dictionary mapping cell IDs to stress tensors at quadrature points
+  - Maximum von Mises stress value in the model
+  - Cell ID where the maximum stress occurs
 """
 function calculate_stresses_simp(u, dh, cellvalues, material_model, density_data)
     # Initialize storage for stresses
     stress_field = Dict{Int, Vector{SymmetricTensor{2, 3, Float64}}}()
+    
+    # Track maximum von Mises stress and its location
+    max_von_mises = 0.0
+    max_vm_cell_id = 0
     
     # For each cell, calculate stresses at quadrature points
     for cell in CellIterator(dh)
@@ -654,6 +698,9 @@ function calculate_stresses_simp(u, dh, cellvalues, material_model, density_data
         n_qpoints = getnquadpoints(cellvalues)
         cell_stresses = Vector{SymmetricTensor{2, 3, Float64}}(undef, n_qpoints)
         
+        # Calculate cell's average stress for von Mises calculation
+        avg_stress = zero(SymmetricTensor{2, 3, Float64})
+        
         # Compute stresses at each quadrature point
         for q_point in 1:n_qpoints
             # Calculate strain from displacement gradients
@@ -667,6 +714,24 @@ function calculate_stresses_simp(u, dh, cellvalues, material_model, density_data
             
             # Store stress for this quadrature point
             cell_stresses[q_point] = σ
+            
+            # Add to average stress
+            avg_stress += σ
+        end
+        
+        # Compute average stress for the cell
+        if n_qpoints > 0
+            avg_stress = avg_stress / n_qpoints
+            
+            # Calculate von Mises stress for this cell
+            # von Mises = sqrt(3/2 * (dev(σ) ⊡ dev(σ)))
+            cell_von_mises = sqrt(3/2 * (dev(avg_stress) ⊡ dev(avg_stress)))
+            
+            # Update maximum if this is higher
+            if cell_von_mises > max_von_mises
+                max_von_mises = cell_von_mises
+                max_vm_cell_id = cell_id
+            end
         end
         
         # Store stresses for this cell
@@ -674,7 +739,9 @@ function calculate_stresses_simp(u, dh, cellvalues, material_model, density_data
     end
     
     println("Stress calculation complete with variable material properties")
-    return stress_field
+    println("Maximum von Mises stress: $max_von_mises at cell $max_vm_cell_id")
+    
+    return stress_field, max_von_mises, max_vm_cell_id
 end
 
 """
@@ -693,7 +760,12 @@ Parameters:
 - `constraints...`: ConstraintHandlers with boundary conditions
 
 Returns:
-- displacement vector, deformation energy, and stress field
+- Tuple with:
+  - displacement vector
+  - deformation energy
+  - stress field dictionary
+  - maximum von Mises stress value
+  - cell ID where the maximum stress occurs
 """
 function solve_system_simp(K, f, dh, cellvalues, material_model, density_data, constraints...)
     # Apply zero value to constrained dofs for all constraint handlers
@@ -708,14 +780,15 @@ function solve_system_simp(K, f, dh, cellvalues, material_model, density_data, c
     
     # Calculate deformation energy: U = 0.5 * u^T * K * u
     deformation_energy = 0.5 * dot(u, K * u)
-    
+   
     # Calculate stresses
-    stress_field = calculate_stresses_simp(u, dh, cellvalues, material_model, density_data)
+    stress_field, max_von_mises, max_stress_cell = calculate_stresses_simp(u, dh, cellvalues, material_model, density_data)
     
     println("Analysis complete")
     println("Deformation energy: $deformation_energy J")
+    println("Maximum von Mises stress: $max_von_mises at cell $max_stress_cell")
     
-    return u, deformation_energy, stress_field
+    return u, deformation_energy, stress_field, max_von_mises, max_stress_cell
 end
 
 
