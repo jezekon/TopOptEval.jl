@@ -228,7 +228,8 @@ Returns:
 function select_nodes_by_plane(grid::Grid, 
                                point::Vector{Float64}, 
                                normal::Vector{Float64}, 
-                               tolerance::Float64=1e-4)
+                               tolerance::Float64=1.)
+                               # tolerance::Float64=1e-2)
     # Normalize the normal vector
     unit_normal = normal / norm(normal)
     
@@ -276,7 +277,8 @@ function select_nodes_by_circle(grid::Grid,
                                 center::Vector{Float64}, 
                                 normal::Vector{Float64}, 
                                 radius::Float64, 
-                                tolerance::Float64=1e-6)
+                                tolerance::Float64=1.)
+                                # tolerance::Float64=1e-2)
     # First, get nodes on the plane
     nodes_on_plane = select_nodes_by_plane(grid, center, normal, tolerance)
     
