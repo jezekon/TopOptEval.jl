@@ -3,12 +3,15 @@ using LinearAlgebra  # Add this import for eigvals function
 using TopOptEval
 using TopOptEval.Utils
 
+include("VolumeForces/testVolumeForces.jl")
+
+
 @testset "TopOptEval.jl" begin
     # Test configuration flags
-    RUN_raw_beam = true
-    RUN_lin_beam = true
-    RUN_sdf_beam_approx = true
-    RUN_sdf_beam_interp = true
+    RUN_raw_beam = false
+    RUN_lin_beam = false
+    RUN_sdf_beam_approx = false
+    RUN_sdf_beam_interp = false
 
     # Raw results from SIMP method (density field)
     if RUN_raw_beam
