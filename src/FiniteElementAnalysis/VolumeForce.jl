@@ -1,5 +1,3 @@
-# Add these functions to the FiniteElementAnalysis module
-
 """
     apply_volume_force!(f, dh, cellvalues, body_force_vector, density=1.0)
 
@@ -57,19 +55,24 @@ function apply_volume_force!(f, dh, cellvalues, body_force_vector, density=1.0)
             dΩ = getdetJdV(cellvalues, q_point)
             total_volume += dΩ
             
-            # Loop over all basis functions (nodes in the element)
+            # Loop over all basis functions (DOFs in the element)
             for i in 1:n_basefuncs
                 # Get shape function value at this quadrature point
-                N = shape_value(cellvalues, q_point, i)
+                # For vector interpolation, this returns a Vec{3, Float64}
+                N_vec = shape_value(cellvalues, q_point, i)
                 
-                # Calculate body force contribution for each DOF
-                # Assuming 3D problem with 3 DOFs per node
-                dofs_per_node = 3
+                # Calculate which spatial component this DOF corresponds to
+                # For vector interpolation: DOF layout is [u1_x, u1_y, u1_z, u2_x, u2_y, u2_z, ...]
+                dofs_per_node = 3  # 3D problem
                 node_idx = div(i - 1, dofs_per_node) + 1
                 dof_component = mod(i - 1, dofs_per_node) + 1
                 
+                # Extract the scalar shape function value for this component
+                # The shape function vector has non-zero value only for the corresponding component
+                N_scalar = N_vec[dof_component]
+                
                 # Add body force contribution: ρ * b * N * dΩ
-                body_force_contribution = density * body_force_per_mass[dof_component] * N * dΩ
+                body_force_contribution = density * body_force_per_mass[dof_component] * N_scalar * dΩ
                 fe_body[i] += body_force_contribution
                 
                 # Track total applied force
@@ -191,14 +194,18 @@ function apply_variable_density_volume_force!(f, dh, cellvalues, body_force_vect
             dΩ = getdetJdV(cellvalues, q_point)
             
             for i in 1:n_basefuncs
-                N = shape_value(cellvalues, q_point, i)
+                # Get vector shape function value
+                N_vec = shape_value(cellvalues, q_point, i)
                 
                 # Calculate DOF component
                 dofs_per_node = 3
                 dof_component = mod(i - 1, dofs_per_node) + 1
                 
+                # Extract scalar component
+                N_scalar = N_vec[dof_component]
+                
                 # Apply variable density body force
-                body_force_contribution = density * body_force_vector[dof_component] * N * dΩ
+                body_force_contribution = density * body_force_vector[dof_component] * N_scalar * dΩ
                 fe_body[i] += body_force_contribution
                 
                 # Track total force
