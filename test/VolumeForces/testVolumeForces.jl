@@ -31,9 +31,9 @@ function test_cantilever_gravity()
     u, energy, stress_field, max_vm, max_cell = solve_system(K, f, dh, cellvalues, λ, μ, ch)
     
     # Analytické řešení pro maximální průhyb konzoly:
-    # δ_max = (ρ * g * L⁴) / (8 * E * I)
-    I = w * h³ / 12  # moment setrvačnosti
-    analytical_deflection = (ρ * g * L^4) / (8 * E * I)
+    # δ_max = (ρ * g * L^4) / (8 * E * I)
+    I = w * h^3 / 12  # moment setrvačnosti (corrected: h^3 instead of h³)
+    analytical_deflection = (ρ * g * L^4) / (8 * E * I)  # corrected: L^4 instead of L⁴
     
     println("Analytický maximální průhyb: ", analytical_deflection, " m")
     
