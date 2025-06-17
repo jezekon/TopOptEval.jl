@@ -36,17 +36,21 @@ success = InpToVtu("model.inp", "output_mesh")
 success = InpToVtu("model.inp", "output_mesh", verbose=false)
 ```
 
-# Supported Abaqus Element Types:
-- C3D4: 4-node linear tetrahedron → VTK_TETRA
-- C3D8: 8-node linear hexahedron → VTK_HEXAHEDRON  
-- C3D10: 10-node quadratic tetrahedron → VTK_QUADRATIC_TETRA
-- C3D20: 20-node quadratic hexahedron → VTK_QUADRATIC_HEXAHEDRON
-- S3: 3-node triangle shell → VTK_TRIANGLE
-- S4: 4-node quadrilateral shell → VTK_QUAD
-- S6: 6-node quadratic triangle → VTK_QUADRATIC_TRIANGLE
-- S8: 8-node quadratic quadrilateral → VTK_QUADRATIC_QUAD
-- T3D2: 2-node truss element → VTK_LINE
-- T3D3: 3-node quadratic truss → VTK_QUADRATIC_EDGE
+# Supported AbaqusReader Element Type Symbols:
+- Hex8: 8-node linear hexahedron (C3D8) → VTK_HEXAHEDRON
+- Tet4: 4-node linear tetrahedron (C3D4) → VTK_TETRA  
+- Hex20: 20-node quadratic hexahedron (C3D20) → VTK_QUADRATIC_HEXAHEDRON
+- Tet10: 10-node quadratic tetrahedron (C3D10) → VTK_QUADRATIC_TETRA
+- Wedge6: 6-node wedge (C3D6) → VTK_WEDGE
+- Wedge15: 15-node quadratic wedge (C3D15) → VTK_QUADRATIC_WEDGE
+- Tri3: 3-node triangle shell (S3) → VTK_TRIANGLE
+- Quad4: 4-node quadrilateral shell (S4) → VTK_QUAD
+- Tri6: 6-node quadratic triangle (S6) → VTK_QUADRATIC_TRIANGLE
+- Quad8: 8-node quadratic quadrilateral (S8) → VTK_QUADRATIC_QUAD
+- Seg2: 2-node truss element (T3D2) → VTK_LINE
+- Seg3: 3-node quadratic truss (T3D3) → VTK_QUADRATIC_EDGE
+
+Note: AbaqusReader.jl converts Abaqus element names (e.g., C3D8) to its own symbols (e.g., Hex8)
 
 # Notes:
 - Only mesh geometry is converted (nodes and elements)
@@ -145,14 +149,7 @@ function InpToVtu(inp_file::String, output_file::String; verbose::Bool=true)
         verbose && println("💾 Writing VTU file: $(output_file).vtu")
         
         vtk_grid(output_file, points, cells) do vtk
-            # Add metadata about the conversion
-            vtk["AbaqusInputFile"] = [inp_file]
-            vtk["ConversionTime"] = [string(now())]
-            vtk["TotalNodes"] = [length(node_ids)]
-            vtk["TotalElements"] = [length(cells)]
-            
-            # Could add element sets or node sets here if needed
-            # Example: vtk["ElementSet_Name"] = element_set_data
+            # Only mesh geometry - no additional data
         end
         
         verbose && println("✅ Conversion completed successfully!")
@@ -171,66 +168,104 @@ end
 """
     _abaqus_to_vtk_cell(abaqus_type::Symbol, connectivity::Vector{Int})
 
-Internal function to convert Abaqus element types to VTK cell types.
+Internal function to convert AbaqusReader element type symbols to VTK cell types.
 Handles node ordering differences between Abaqus and VTK conventions.
 
 # Parameters:
-- `abaqus_type::Symbol`: Abaqus element type (e.g., :C3D8, :C3D4)
+- `abaqus_type::Symbol`: Element type symbol as returned by AbaqusReader (e.g., :Hex8, :Tet4)
 - `connectivity::Vector{Int}`: Node connectivity list (1-based indices)
 
 # Returns:
 - `WriteVTK.MeshCell`: VTK mesh cell, or `nothing` if unsupported
+
+# Note: 
+AbaqusReader.jl converts Abaqus element names to its own symbol format:
+- C3D8 → :Hex8 (8-node hexahedron)
+- C3D4 → :Tet4 (4-node tetrahedron)
+- C3D20 → :Hex20 (20-node quadratic hexahedron)
+- C3D10 → :Tet10 (10-node quadratic tetrahedron)
+etc.
 """
 function _abaqus_to_vtk_cell(abaqus_type::Symbol, connectivity::Vector{Int})
     
-    # Define mapping from Abaqus to VTK element types
-    # Note: Some elements may require node reordering
+    # Define mapping from AbaqusReader symbols to VTK element types
+    # Note: AbaqusReader converts C3D8 to :Hex8, C3D4 to :Tet4, etc.
     
-    if abaqus_type == :C3D4  # 4-node linear tetrahedron
+    # Linear hexahedral elements
+    if abaqus_type == :Hex8 || abaqus_type == :C3D8  # 8-node linear hexahedron
+        # VTK hexahedron node order: bottom face (1,2,3,4), top face (5,6,7,8)
+        # AbaqusReader should maintain correct node ordering
+        return WriteVTK.MeshCell(WriteVTK.VTKCellTypes.VTK_HEXAHEDRON, connectivity)
+        
+    # Linear tetrahedral elements  
+    elseif abaqus_type == :Tet4 || abaqus_type == :C3D4  # 4-node linear tetrahedron
         # Abaqus and VTK have same node ordering for tetrahedra
         return WriteVTK.MeshCell(WriteVTK.VTKCellTypes.VTK_TETRA, connectivity)
         
-    elseif abaqus_type == :C3D8  # 8-node linear hexahedron
-        # Abaqus and VTK may have different node ordering for hexahedra
-        # VTK hexahedron node order: bottom face (1,2,3,4), top face (5,6,7,8)
-        # Abaqus usually follows the same convention, but verify if needed
-        return WriteVTK.MeshCell(WriteVTK.VTKCellTypes.VTK_HEXAHEDRON, connectivity)
-        
-    elseif abaqus_type == :C3D10  # 10-node quadratic tetrahedron
-        # May need node reordering - verify with actual data
-        return WriteVTK.MeshCell(WriteVTK.VTKCellTypes.VTK_QUADRATIC_TETRA, connectivity)
-        
-    elseif abaqus_type == :C3D20  # 20-node quadratic hexahedron
+    # Quadratic hexahedral elements
+    elseif abaqus_type == :Hex20 || abaqus_type == :C3D20  # 20-node quadratic hexahedron
         return WriteVTK.MeshCell(WriteVTK.VTKCellTypes.VTK_QUADRATIC_HEXAHEDRON, connectivity)
         
-    elseif abaqus_type == :S3  # 3-node triangle shell
+    # Quadratic tetrahedral elements
+    elseif abaqus_type == :Tet10 || abaqus_type == :C3D10  # 10-node quadratic tetrahedron
+        return WriteVTK.MeshCell(WriteVTK.VTKCellTypes.VTK_QUADRATIC_TETRA, connectivity)
+        
+    # Wedge/Prism elements
+    elseif abaqus_type == :Wedge6 || abaqus_type == :C3D6  # 6-node wedge
+        return WriteVTK.MeshCell(WriteVTK.VTKCellTypes.VTK_WEDGE, connectivity)
+        
+    elseif abaqus_type == :Wedge15 || abaqus_type == :C3D15  # 15-node quadratic wedge
+        return WriteVTK.MeshCell(WriteVTK.VTKCellTypes.VTK_QUADRATIC_WEDGE, connectivity)
+        
+    # Shell elements
+    elseif abaqus_type == :Tri3 || abaqus_type == :S3  # 3-node triangle shell
         return WriteVTK.MeshCell(WriteVTK.VTKCellTypes.VTK_TRIANGLE, connectivity)
         
-    elseif abaqus_type == :S4  # 4-node quadrilateral shell
+    elseif abaqus_type == :Quad4 || abaqus_type == :S4  # 4-node quadrilateral shell
         return WriteVTK.MeshCell(WriteVTK.VTKCellTypes.VTK_QUAD, connectivity)
         
-    elseif abaqus_type == :S6  # 6-node quadratic triangle
+    elseif abaqus_type == :Tri6 || abaqus_type == :S6  # 6-node quadratic triangle
         return WriteVTK.MeshCell(WriteVTK.VTKCellTypes.VTK_QUADRATIC_TRIANGLE, connectivity)
         
-    elseif abaqus_type == :S8  # 8-node quadratic quadrilateral
+    elseif abaqus_type == :Quad8 || abaqus_type == :S8  # 8-node quadratic quadrilateral
         return WriteVTK.MeshCell(WriteVTK.VTKCellTypes.VTK_QUADRATIC_QUAD, connectivity)
         
-    elseif abaqus_type == :T3D2  # 2-node truss element
+    # Truss/Beam elements
+    elseif abaqus_type == :Seg2 || abaqus_type == :T3D2  # 2-node truss element
         return WriteVTK.MeshCell(WriteVTK.VTKCellTypes.VTK_LINE, connectivity)
         
-    elseif abaqus_type == :T3D3  # 3-node quadratic truss
+    elseif abaqus_type == :Seg3 || abaqus_type == :T3D3  # 3-node quadratic truss
         return WriteVTK.MeshCell(WriteVTK.VTKCellTypes.VTK_QUADRATIC_EDGE, connectivity)
         
-    # Add more element types as needed
-    # Common element types to potentially add:
-    # - :C3D6 (wedge/prism)
-    # - :C3D15 (quadratic wedge)
-    # - :CPE3, :CPE4 (plane strain elements)
-    # - :CPS3, :CPS4 (plane stress elements)
-    # - :CAX3, :CAX4 (axisymmetric elements)
-    
+    # Plane stress/strain elements (2D elements)
+    elseif abaqus_type == :CPE3 || abaqus_type == :CPS3  # 3-node plane element
+        return WriteVTK.MeshCell(WriteVTK.VTKCellTypes.VTK_TRIANGLE, connectivity)
+        
+    elseif abaqus_type == :CPE4 || abaqus_type == :CPS4  # 4-node plane element
+        return WriteVTK.MeshCell(WriteVTK.VTKCellTypes.VTK_QUAD, connectivity)
+        
+    elseif abaqus_type == :CPE6 || abaqus_type == :CPS6  # 6-node quadratic plane element
+        return WriteVTK.MeshCell(WriteVTK.VTKCellTypes.VTK_QUADRATIC_TRIANGLE, connectivity)
+        
+    elseif abaqus_type == :CPE8 || abaqus_type == :CPS8  # 8-node quadratic plane element
+        return WriteVTK.MeshCell(WriteVTK.VTKCellTypes.VTK_QUADRATIC_QUAD, connectivity)
+        
+    # Axisymmetric elements
+    elseif abaqus_type == :CAX3  # 3-node axisymmetric element
+        return WriteVTK.MeshCell(WriteVTK.VTKCellTypes.VTK_TRIANGLE, connectivity)
+        
+    elseif abaqus_type == :CAX4  # 4-node axisymmetric element
+        return WriteVTK.MeshCell(WriteVTK.VTKCellTypes.VTK_QUAD, connectivity)
+        
+    elseif abaqus_type == :CAX6  # 6-node quadratic axisymmetric element
+        return WriteVTK.MeshCell(WriteVTK.VTKCellTypes.VTK_QUADRATIC_TRIANGLE, connectivity)
+        
+    elseif abaqus_type == :CAX8  # 8-node quadratic axisymmetric element
+        return WriteVTK.MeshCell(WriteVTK.VTKCellTypes.VTK_QUADRATIC_QUAD, connectivity)
+        
     else
-        # Unsupported element type
+        # Unsupported element type - log it for debugging
+        @debug "Unsupported element type: $abaqus_type"
         return nothing
     end
 end
@@ -327,6 +362,74 @@ function validate_inp_file(inp_file::String)
     return validation_results
 end
 
+"""
+    inspect_inp_elements(inp_file::String)
+
+Diagnostic function to inspect what element types are actually found by AbaqusReader.
+Useful for debugging unsupported element type issues.
+
+# Parameters:
+- `inp_file::String`: Path to the .inp file
+
+# Returns:
+- `Dict`: Summary of element types found in the file
+"""
+function inspect_inp_elements(inp_file::String)
+    if !isfile(inp_file)
+        error("File does not exist: $inp_file")
+    end
+    
+    println("🔍 Inspecting element types in: $inp_file")
+    
+    try
+        mesh_data = abaqus_read_mesh(inp_file)
+        elements = mesh_data["elements"]
+        element_types = mesh_data["element_types"]
+        
+        # Count each element type
+        type_counts = Dict{Symbol, Int}()
+        for elem_type in values(element_types)
+            type_counts[elem_type] = get(type_counts, elem_type, 0) + 1
+        end
+        
+        println("\n📊 Element Type Summary:")
+        println("=" ^ 50)
+        
+        total_elements = 0
+        for (elem_type, count) in sort(collect(type_counts))
+            supported = _abaqus_to_vtk_cell(elem_type, [1, 2, 3, 4]) !== nothing
+            status = supported ? "✅ SUPPORTED" : "❌ UNSUPPORTED"
+            println("   $elem_type: $count elements ($status)")
+            total_elements += count
+        end
+        
+        println("=" ^ 50)
+        println("   Total: $total_elements elements")
+        
+        # Return detailed information
+        result = Dict(
+            "total_elements" => total_elements,
+            "element_counts" => type_counts,
+            "supported_types" => Symbol[],
+            "unsupported_types" => Symbol[]
+        )
+        
+        for elem_type in keys(type_counts)
+            if _abaqus_to_vtk_cell(elem_type, [1, 2, 3, 4]) !== nothing
+                push!(result["supported_types"], elem_type)
+            else
+                push!(result["unsupported_types"], elem_type)
+            end
+        end
+        
+        return result
+        
+    catch e
+        @error "Failed to inspect file: $e"
+        return Dict("error" => string(e))
+    end
+end
+
 # Example usage and testing function
 """
     test_conversion(inp_file::String="test.inp")
@@ -367,6 +470,6 @@ function test_conversion(inp_file::String="test.inp")
     else
         println("❌ Test failed!")
     end
-    
-    return success
 end
+
+InpToVtu("stul14.inp", "stul14")
