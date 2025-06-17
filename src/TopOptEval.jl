@@ -19,6 +19,8 @@ export import_mesh, create_material_model, setup_problem,
        create_simp_material_model, assemble_stiffness_matrix_simp!,
        solve_system_simp, extract_cell_density
 
+export apply_volume_force!, apply_gravity!, apply_acceleration!, apply_variable_density_volume_force!
+
 # Import specific functions from submodules to re-export
 import .MeshImport: import_mesh, extract_cell_density
 import .FiniteElementAnalysis: create_material_model, setup_problem,

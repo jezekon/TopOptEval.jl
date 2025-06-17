@@ -215,6 +215,3 @@ function apply_variable_density_volume_force!(f, dh, cellvalues, body_force_vect
     println("Applied variable density volume force")
     println("Total force applied: $total_force_applied N")
 end
-
-# Export the new functions
-export apply_volume_force!, apply_gravity!, apply_acceleration!, apply_variable_density_volume_force!
