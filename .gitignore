@@ -3,7 +3,7 @@
 *vtr
 *vtu
 *vtk
+*inp
 
 !data/*.vtu
 data/chapadlo/chapadlo_B-2.0-nodal_STL.stl
-src/Utils/stul15.inp
