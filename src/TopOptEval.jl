@@ -23,11 +23,7 @@ export import_mesh, create_material_model, setup_problem,
        create_simp_material_model, assemble_stiffness_matrix_simp!,
        solve_system_simp, extract_cell_density
 
-# Add volume force exports
 export apply_volume_force!, apply_gravity!, apply_acceleration!, apply_variable_density_volume_force!
 
-# Add solver configuration exports (MISSING - this was the problem!)
-export SimpleSolverConfig, SimpleSolverType, DIRECT, ITERATIVE,
-       direct_solver, iterative_solver, auto_solve, estimate_memory_usage
-
 end # module TopOptEval
+
