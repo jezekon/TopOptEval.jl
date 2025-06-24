@@ -12,6 +12,9 @@ export create_material_model, setup_problem, assemble_stiffness_matrix!,
        calculate_stresses, create_simp_material_model, assemble_stiffness_matrix_simp!,
        calculate_stresses_simp, solve_system_simp
 
+include("VolumeForce.jl")
+export apply_volume_force!, apply_gravity!, apply_acceleration!, apply_variable_density_volume_force!
+
 """
     create_material_model(youngs_modulus::Float64, poissons_ratio::Float64)
 
