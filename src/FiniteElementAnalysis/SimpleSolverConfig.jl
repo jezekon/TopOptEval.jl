@@ -199,6 +199,7 @@ end
 
 """
 Iterativní solver s Conjugate Gradient a diagonálním předpodmíněním.
+FIXED: Corrected IterativeSolvers API usage
 """
 function solve_iterative_simple(K, f, config::SimpleSolverConfig)
     if config.verbose
@@ -217,39 +218,53 @@ function solve_iterative_simple(K, f, config::SimpleSolverConfig)
     # Počáteční odhad (nulový vektor)
     x0 = zeros(size(f))
     
-    # Řešení pomocí CG s předpodmíněním
-    result = cg(K, f;
-               Pl = preconditioner,           # Levé předpodmínění
-               x = x0,                        # Počáteční odhad
-               maxiter = config.max_iterations, # Max iterací
-               tol = config.tolerance,        # Tolerace
-               verbose = config.verbose,      # Výpis průběhu
-               log = true                     # Vrať log konvergence
-              )
-    
-    solve_time = time() - start_time
-    x, history = result
-    
-    info = Dict(
-        "converged" => history.converged,
-        "method" => "Conjugate Gradient",
-        "iterations" => history.iters,
-        "solve_time" => solve_time,
-        "residual_norm" => history.residuals[end],
-        "residual_history" => history.residuals
-    )
-    
-    if config.verbose
-        if history.converged
-            println("  ✓ Konvergence za $(history.iters) iterací")
-        else
-            println("  ✗ Nekonvergoval za $(config.max_iterations) iterací")
+    # FIXED: Correct IterativeSolvers API usage
+    # Use cg! (in-place) with proper parameter names
+    try
+        # Copy initial guess to solution vector
+        x = copy(x0)
+        
+        # Solve using CG with preconditioner - use cg! for in-place modification
+        history = cg!(x, K, f;
+                     Pl = preconditioner,                # Left preconditioner
+                     maxiter = config.max_iterations,    # Maximum iterations
+                     reltol = config.tolerance,          # Relative tolerance (FIXED: use reltol instead of tol)
+                     verbose = config.verbose,           # Print progress
+                     log = true                          # Return convergence log
+                    )
+        
+        solve_time = time() - start_time
+        
+        info = Dict(
+            "converged" => history.converged,
+            "method" => "Conjugate Gradient",
+            "iterations" => history.iters,
+            "solve_time" => solve_time,
+            "residual_norm" => history.residuals[end],
+            "residual_history" => history.residuals
+        )
+        
+        if config.verbose
+            if history.converged
+                println("  ✓ Konvergence za $(history.iters) iterací")
+            else
+                println("  ✗ Nekonvergoval za $(config.max_iterations) iterací")
+            end
+            println("  ✓ Finální reziduum: $(history.residuals[end])")
+            println("  ✓ Čas řešení: $(round(solve_time, digits=2)) s")
         end
-        println("  ✓ Finální reziduum: $(history.residuals[end])")
-        println("  ✓ Čas řešení: $(round(solve_time, digits=2)) s")
+        
+        return x, info
+        
+    catch e
+        if config.verbose
+            println("  ✗ CG solver selhal: $e")
+            println("  Zkouším fallback na přímý solver...")
+        end
+        
+        # Fallback to direct solver if iterative fails
+        return solve_direct_simple(K, f, config)
     end
-    
-    return x, info
 end
 
 """

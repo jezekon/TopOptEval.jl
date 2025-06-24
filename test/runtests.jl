@@ -8,8 +8,8 @@ using TopOptEval.Utils
 
 @testset "TopOptEval.jl" begin
     # Chapadlo test configuration flags
-    RUN_raw_chapadlo = false
-    RUN_lin_chapadlo = true
+    RUN_raw_chapadlo = true
+    RUN_lin_chapadlo = false
     RUN_sdf_chapadlo = false
     
     # Raw results from SIMP method (density field) - chapadlo version
@@ -79,7 +79,10 @@ using TopOptEval.Utils
             apply_acceleration!(f, dh, cellvalues, [0.0, 6000.0, 0.0], ρ)
             
             # 8. Solve the system
-            u, energy, stress_field, max_von_mises, max_stress_cell = solve_system_simp(K, f, dh, cellvalues, material_model, density_data, ch1, ch2)
+            config = iterative_solver(max_iterations=2000, tolerance=1e-6, verbose=true)
+            # u, energy, stress_field, max_vm, max_cell, solver_info = solve_system_simp(K, f, dh, cellvalues, λ, μ, ch1; solver_config=config)
+            u, energy, stress_field, max_von_mises, max_stress_cell = solve_system_simp(K, f, dh, cellvalues, material_model, density_data, ch1, ch2; solver_config=config)
+            # u, energy, stress_field, max_von_mises, max_stress_cell = solve_system_simp(K, f, dh, cellvalues, material_model, density_data, ch1, ch2)
     
             # 9. Print deformation energy and maximum stress
             @info "Final deformation energy: $energy J"
@@ -151,9 +154,12 @@ using TopOptEval.Utils
             apply_acceleration!(f, dh, cellvalues, [0.0, 6000.0, 0.0], ρ)
             
             # 7. Solve the system
-            config = iterative_solver(max_iterations=2000, tolerance=1e-6, verbose=true)
+            config = direct_solver()  # Nebo úplně vynechejte solver_config
             u, energy, stress_field, max_vm, max_cell, solver_info = 
-                solve_system(K, f, dh, cellvalues, λ, μ, ch1; solver_config=config)
+                solve_system(K, f, dh, cellvalues, λ, μ, ch1, ch2) 
+            # config = iterative_solver(max_iterations=2000, tolerance=1e-6, verbose=true)
+            # u, energy, stress_field, max_vm, max_cell, solver_info = 
+            #     solve_system(K, f, dh, cellvalues, λ, μ, ch1; solver_config=config)
             # u, energy, stress_field, max_von_mises, max_stress_cell = solve_system(K, f, dh, cellvalues, λ, μ, ch1, ch2)
     
             # 8. Print deformation energy and maximum stress
