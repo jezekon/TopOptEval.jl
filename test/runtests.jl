@@ -151,10 +151,7 @@ using TopOptEval.Utils
             apply_acceleration!(f, dh, cellvalues, [0.0, 6000.0, 0.0], ρ)
             
             # 7. Solve the system
-            config = iterative_solver(max_iterations=2000, tolerance=1e-6, verbose=true)
-            u, energy, stress_field, max_vm, max_cell, solver_info = 
-                solve_system(K, f, dh, cellvalues, λ, μ, ch1; solver_config=config)
-            # u, energy, stress_field, max_von_mises, max_stress_cell = solve_system(K, f, dh, cellvalues, λ, μ, ch1, ch2)
+            u, energy, stress_field, max_von_mises, max_stress_cell = solve_system(K, f, dh, cellvalues, λ, μ, ch1, ch2)
     
             # 8. Print deformation energy and maximum stress
             @info "Final deformation energy: $energy J"
