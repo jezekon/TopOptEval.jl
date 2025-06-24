@@ -15,6 +15,10 @@ export create_material_model, setup_problem, assemble_stiffness_matrix!,
 include("VolumeForce.jl")
 export apply_volume_force!, apply_gravity!, apply_acceleration!, apply_variable_density_volume_force!
 
+include("SimpleSolverConfig.jl")
+export SimpleSolverConfig, SimpleSolverType, DIRECT, ITERATIVE,
+       direct_solver, iterative_solver, auto_solve, estimate_memory_usage
+
 """
     create_material_model(youngs_modulus::Float64, poissons_ratio::Float64)
 
@@ -510,50 +514,80 @@ function calculate_stresses(u, dh, cellvalues, λ, μ)
 end
 
 """
-    solve_system(K, f, dh, cellvalues, λ, μ, constraints...)
+    solve_system(K, f, dh, cellvalues, λ, μ, constraints...; 
+                solver_config::Union{SimpleSolverConfig, Nothing} = nothing)
 
-Solves the system of linear equations with multiple constraint handlers
-and calculates stresses.
+Vylepšená solve_system funkce s volitelnou konfigurací solveru.
 
-Parameters:
-- `K`: global stiffness matrix
-- `f`: global load vector
+# Parameters:
+- `K`: globální matice tuhosti
+- `f`: globální vektor zatížení
 - `dh`: DofHandler
-- `cellvalues`: CellValues for interpolation and integration
-- `λ`, `μ`: material parameters
-- `constraints...`: ConstraintHandlers with boundary conditions
+- `cellvalues`: CellValues pro interpolaci a integraci
+- `λ`, `μ`: materiálové parametry
+- `constraints...`: ConstraintHandlers s okrajovými podmínkami
+- `solver_config`: Volitelná konfigurace solveru (Nothing = automatický výběr)
 
-Returns:
-- Tuple with:
+# Returns:
+- Tuple containing:
   - displacement vector
-  - deformation energy
+  - deformation energy  
   - stress field dictionary
   - maximum von Mises stress value
   - cell ID where the maximum stress occurs
+  - solver information dictionary
 """
-function solve_system(K, f, dh, cellvalues, λ, μ, constraints...)
-    # Apply zero value to constrained dofs for all constraint handlers
+function solve_system(K, f, dh, cellvalues, λ, μ, constraints...; 
+                     solver_config::Union{SimpleSolverConfig, Nothing} = nothing)
+    
+    # Aplikuj okrajové podmínky
     for ch in constraints
         apply_zero!(K, f, ch)
     end
     
-    println("Solving linear system...")
+    println("Příprava řešení lineárního systému...")
     
-    # Solve
-    u = K \ f  # Implicit method using backslash operator
+    # Pokud není zadána konfigurace, použij automatický výběr
+    if solver_config === nothing
+        println("Automatický výběr solveru...")
+        x, solver_info = auto_solve(K, f, verbose=true)
+    else
+        println("Používám zadanou konfiguraci solveru...")
+        x, solver_info = solve_linear_system_simple(K, f, solver_config)
+    end
     
-    # Calculate deformation energy: U = 0.5 * u^T * K * u
-    deformation_energy = 0.5 * dot(u, K * u)
+    # Kontrola konvergence pro iterativní solvery
+    if !solver_info["converged"] && haskey(solver_info, "iterations")
+        @warn "Iterativní solver nekonvergoval!"
+        @warn "Finální reziduum: $(solver_info["residual_norm"])"
+        @warn "Zvažte:"
+        @warn "  - Zvýšení max_iterations"
+        @warn "  - Snížení tolerance"
+        @warn "  - Použití přímého solveru: direct_solver()"
+    end
     
-    # Calculate stresses
-    stress_field, max_von_mises, max_stress_cell = calculate_stresses(u, dh, cellvalues, λ, μ)
-
+    # Výpočet deformační energie: U = 0.5 * u^T * K * u
+    println("Výpočet deformační energie...")
+    deformation_energy = 0.5 * dot(x, K * x)
     
-    println("Analysis complete")
-    println("Deformation energy: $deformation_energy J")
-    println("Maximum von Mises stress: $max_von_mises at cell $max_stress_cell")
+    # Výpočet napětí
+    println("Výpočet pole napětí...")
+    stress_field, max_von_mises, max_stress_cell = calculate_stresses(x, dh, cellvalues, λ, μ)
     
-    return u, deformation_energy, stress_field, max_von_mises, max_stress_cell
+    # Výsledky
+    println("\n" * "="^60)
+    println("ANALÝZA DOKONČENA")
+    println("="^60)
+    println("Solver: $(solver_info["method"])")
+    if haskey(solver_info, "iterations")
+        println("Iterace: $(solver_info["iterations"])")
+        println("Finální reziduum: $(solver_info["residual_norm"])")
+    end
+    println("Čas řešení: $(round(solver_info["solve_time"], digits=2)) sekund")
+    println("Deformační energie: $deformation_energy J")
+    println("Maximální von Mises napětí: $max_von_mises v elementu $max_stress_cell")
+    
+    return x, deformation_energy, stress_field, max_von_mises, max_stress_cell, solver_info
 end
 
 """
@@ -748,51 +782,180 @@ function calculate_stresses_simp(u, dh, cellvalues, material_model, density_data
 end
 
 """
-    solve_system_simp(K, f, dh, cellvalues, material_model, density_data, constraints...)
+    solve_system_simp(K, f, dh, cellvalues, material_model, density_data, constraints...;
+                     solver_config::Union{SimpleSolverConfig, Nothing} = nothing)
 
-Solves the system of linear equations with multiple constraint handlers
-and calculates stresses, using variable material properties.
+Vylepšená solve_system_simp funkce pro SIMP topologickou optimalizaci.
 
-Parameters:
-- `K`: global stiffness matrix
-- `f`: global load vector
+# Parameters:
+- `K`: globální matice tuhosti
+- `f`: globální vektor zatížení
 - `dh`: DofHandler
-- `cellvalues`: CellValues for interpolation and integration
-- `material_model`: Function mapping density to material parameters (λ, μ)
-- `density_data`: Vector with density values for each cell
-- `constraints...`: ConstraintHandlers with boundary conditions
+- `cellvalues`: CellValues pro interpolaci a integraci
+- `material_model`: Funkce mapující hustotu na materiálové parametry (λ, μ)
+- `density_data`: Vektor s hodnotami hustoty pro každý element
+- `constraints...`: ConstraintHandlers s okrajovými podmínkami
+- `solver_config`: Volitelná konfigurace solveru
 
-Returns:
-- Tuple with:
+# Returns:
+- Tuple containing:
   - displacement vector
   - deformation energy
   - stress field dictionary
   - maximum von Mises stress value
   - cell ID where the maximum stress occurs
+  - solver information dictionary
 """
-function solve_system_simp(K, f, dh, cellvalues, material_model, density_data, constraints...)
-    # Apply zero value to constrained dofs for all constraint handlers
+function solve_system_simp(K, f, dh, cellvalues, material_model, density_data, constraints...;
+                          solver_config::Union{SimpleSolverConfig, Nothing} = nothing)
+    
+    # Aplikuj okrajové podmínky
     for ch in constraints
         apply_zero!(K, f, ch)
     end
     
-    println("Solving linear system...")
+    println("Příprava řešení SIMP lineárního systému...")
     
-    # Solve
-    u = K \ f  # Implicit method using backslash operator
+    # Automatický výběr solveru s ohledem na SIMP specifika
+    if solver_config === nothing
+        println("Automatický výběr solveru pro SIMP analýzu...")
+        
+        # Pro SIMP problémy bývá matice hůře podmíněná kvůli nízkým hustotám
+        matrix_size = size(K, 1)
+        nnz_count = nnz(K)
+        total_ram_gb = Sys.total_memory() / 1e9
+        available_ram_gb = total_ram_gb * 0.6  # Konzervativnější pro SIMP
+        
+        # Kontrola minimální hustoty - pokud jsou velmi nízké hustoty, může být problém s konvergencí
+        min_density = minimum(density_data)
+        if min_density < 1e-6
+            println("  Detekována velmi nízká hustota ($(min_density))")
+            println("  Matice může být špatně podmíněná")
+        end
+        
+        config = choose_solver_automatically(matrix_size, nnz_count, available_ram_gb)
+        
+        # Pro SIMP s nízkými hustotami zvyš toleranci
+        if min_density < 1e-3 && config.solver_type == ITERATIVE
+            config = SimpleSolverConfig(ITERATIVE, 
+                                      max_iterations=config.max_iterations,
+                                      tolerance=1e-5,  # Mírnější tolerance
+                                      verbose=true)
+            println("  Upravena tolerance pro SIMP: 1e-5")
+        end
+        
+        x, solver_info = solve_linear_system_simple(K, f, config)
+    else
+        println("Používám zadanou konfiguraci pro SIMP...")
+        x, solver_info = solve_linear_system_simple(K, f, solver_config)
+    end
     
-    # Calculate deformation energy: U = 0.5 * u^T * K * u
-    deformation_energy = 0.5 * dot(u, K * u)
-   
-    # Calculate stresses
-    stress_field, max_von_mises, max_stress_cell = calculate_stresses_simp(u, dh, cellvalues, material_model, density_data)
+    # Kontrola konvergence
+    if !solver_info["converged"] && haskey(solver_info, "iterations")
+        @warn "SIMP solver nekonvergoval!"
+        @warn "Možné příčiny:"
+        @warn "  - Velmi nízké hustoty způsobují špatné podmínění matice"
+        @warn "  - Zvyšte minimální hustotu (Emin) v material_model"
+        @warn "  - Použijte přímý solver: direct_solver()"
+        @warn "  - Snižte toleranci: iterative_solver(tolerance=1e-4)"
+    end
     
-    println("Analysis complete")
-    println("Deformation energy: $deformation_energy J")
-    println("Maximum von Mises stress: $max_von_mises at cell $max_stress_cell")
+    # Výpočet deformační energie
+    println("Výpočet deformační energie...")
+    deformation_energy = 0.5 * dot(x, K * x)
     
-    return u, deformation_energy, stress_field, max_von_mises, max_stress_cell
+    # Výpočet napětí s proměnnými materiálovými vlastnostmi
+    println("Výpočet pole napětí pro SIMP...")
+    stress_field, max_von_mises, max_stress_cell = calculate_stresses_simp(x, dh, cellvalues, material_model, density_data)
+    
+    # Výsledky
+    println("\n" * "="^60)
+    println("SIMP ANALÝZA DOKONČENA")
+    println("="^60)
+    println("Solver: $(solver_info["method"])")
+    if haskey(solver_info, "iterations")
+        println("Iterace: $(solver_info["iterations"])")
+        println("Finální reziduum: $(solver_info["residual_norm"])")
+    end
+    println("Čas řešení: $(round(solver_info["solve_time"], digits=2)) sekund")
+    println("Deformační energie: $deformation_energy J")
+    println("Maximální von Mises napětí: $max_von_mises v elementu $max_stress_cell")
+    
+    return x, deformation_energy, stress_field, max_von_mises, max_stress_cell, solver_info
 end
 
+"""
+    analyze_problem_memory(dh::DofHandler; available_ram_gb::Float64 = 0.0)
+
+Analyzuje velikost problému a doporučí vhodný solver z hlediska paměti.
+
+# Parameters:
+- `dh`: DofHandler z FEM problému
+- `available_ram_gb`: Dostupná RAM v GB (0 = auto-detekce)
+
+# Returns:
+- Dictionary se statistikami a doporučením
+"""
+function analyze_problem_memory(dh::DofHandler; available_ram_gb::Float64 = 0.0)
+    n_dofs = ndofs(dh)
+    n_nodes = numnodes(dh.grid)
+    n_elements = numcells(dh.grid)
+    
+    # Odhad počtu nenulových prvků pro 3D FEM
+    avg_connections = 27  # Konzervativní odhad pro strukturovanou 3D síť
+    estimated_nnz = min(n_dofs * avg_connections, n_dofs^2)
+    
+    # Auto-detekce RAM
+    if available_ram_gb <= 0.0
+        total_ram_gb = Sys.total_memory() / 1e9
+        available_ram_gb = total_ram_gb * 0.7
+    end
+    
+    # Odhady paměti
+    direct_memory = estimate_memory_usage(n_dofs, estimated_nnz, DIRECT)
+    iterative_memory = estimate_memory_usage(n_dofs, estimated_nnz, ITERATIVE)
+    
+    println("\n" * "="^60)
+    println("ANALÝZA VELIKOSTI PROBLÉMU")
+    println("="^60)
+    println("Uzly: $(n_nodes)")
+    println("Elementy: $(n_elements)")
+    println("Stupně volnosti: $(n_dofs)")
+    println("Odhadované nenulové prvky: $(estimated_nnz)")
+    println("Hustota matice: $(round(100 * estimated_nnz / n_dofs^2, digits=3))%")
+    println("\nOdhady paměti:")
+    println("  Přímý solver: $(round(direct_memory, digits=2)) GB")
+    println("  Iterativní solver: $(round(iterative_memory, digits=2)) GB")
+    println("  Dostupná RAM: $(round(available_ram_gb, digits=1)) GB")
+    
+    # Doporučení
+    println("\nDoporučení:")
+    if direct_memory < available_ram_gb * 0.7
+        println("  ✓ Přímý solver by měl fungovat dobře")
+        recommendation = direct_solver()
+    elseif iterative_memory < available_ram_gb * 0.9
+        println("  → Doporučuji iterativní solver pro úsporu paměti")
+        max_iter = max(1000, n_dofs ÷ 100)
+        recommendation = iterative_solver(max_iterations=max_iter, tolerance=1e-8, verbose=true)
+    else
+        println("  ⚠ Problém může být příliš velký pro dostupnou RAM")
+        println("    Zvažte:")
+        println("    - Hrubší síť")
+        println("    - Více RAM")
+        println("    - Distribuované výpočty")
+        recommendation = iterative_solver(max_iterations=2000, tolerance=1e-5, verbose=true)
+    end
+    
+    return Dict(
+        "n_dofs" => n_dofs,
+        "n_nodes" => n_nodes,
+        "n_elements" => n_elements,
+        "estimated_nnz" => estimated_nnz,
+        "direct_memory_gb" => direct_memory,
+        "iterative_memory_gb" => iterative_memory,
+        "available_ram_gb" => available_ram_gb,
+        "recommendation" => recommendation
+    )
+end
 
 end # module
