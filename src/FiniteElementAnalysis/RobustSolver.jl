@@ -77,19 +77,24 @@ function estimate_memory_usage(K::SparseMatrixCSC)
     n = size(K, 1)
     nnz_K = nnz(K)
     
-    # Memory for storing the matrix
-    matrix_memory = (nnz_K * 8 + n * 4) / 1e9
-    
-    # Estimate fill-in for direct methods
-    bandwidth = estimate_bandwidth(K)
-    fill_factor = min(bandwidth / n, 0.1)
-    direct_memory = matrix_memory * (1 + 10 * fill_factor)
-    
-    # Iterative methods need working vectors
-    # CG needs ~4 vectors, GMRES needs restart+5 vectors
+    # Základní paměť matice
+    matrix_memory = (nnz_K * 8 + n * 8) / 1e9
     vector_memory = n * 8 / 1e9
+    
+    # Realistický fill-in pro velké FEM matice
+    # Místo optimistických 10%, použijeme konzervativní odhad
+    if n > 500000
+        fill_factor = min(50.0, n / 20000)  # 50x-100x pro velké matice
+    elseif n > 100000
+        fill_factor = min(20.0, n / 10000)  # 20x-50x pro střední matice
+    else
+        fill_factor = 5.0  # 5x pro malé matice
+    end
+    
+    # Odhady paměti
+    direct_memory = matrix_memory * (1 + fill_factor)
     cg_memory = matrix_memory + 6 * vector_memory
-    gmres_memory = matrix_memory + 35 * vector_memory  # restart=30
+    gmres_memory = matrix_memory + 35 * vector_memory
     
     return Dict(
         :direct => direct_memory,
@@ -198,42 +203,16 @@ function select_solver_method(K::SparseMatrixCSC, config::SolverConfig)
     mem_estimates = estimate_memory_usage(K)
     matrix_props = check_matrix_properties(K)
     
-    if config.verbose
-        println("\n=== Solver Selection ===")
-        println("Matrix size: $n × $n")
-        println("Non-zeros: $(nnz(K)) ($(round(100*nnz(K)/(n^2), digits=4))% fill)")
-        println("Matrix properties:")
-        println("  Symmetric: $(matrix_props.symmetric)")
-        println("  Positive definite: $(matrix_props.positive_definite)")
-        println("Memory estimates:")
-        println("  Direct solver: $(round(mem_estimates[:direct], digits=2)) GB")
-        println("  CG solver: $(round(mem_estimates[:cg], digits=2)) GB")
-        println("  GMRES solver: $(round(mem_estimates[:gmres], digits=2)) GB")
-        println("  Available memory: $(round(config.memory_limit, digits=2)) GB")
-    end
-    
-    # Decision logic
-    if n < 5000 && mem_estimates[:direct] < config.memory_limit * 0.5
-        method = :direct
-        config.verbose && println("Selected: direct solver (small problem)")
+    # Konzervativnější rozhodování
+    if n < 50000 && mem_estimates[:direct] < config.memory_limit * 0.5
+        return :direct
     elseif matrix_props.symmetric && matrix_props.positive_definite
-        method = :cg
-        config.verbose && println("Selected: CG (symmetric positive definite)")
+        return :cg
     elseif matrix_props.symmetric
-        method = :minres
-        config.verbose && println("Selected: MINRES (symmetric indefinite)")
+        return :minres
     else
-        # For non-symmetric or uncertain cases
-        if mem_estimates[:gmres] < config.memory_limit
-            method = :gmres
-            config.verbose && println("Selected: GMRES (general matrix)")
-        else
-            method = :bicgstab
-            config.verbose && println("Selected: BiCGSTAB (memory-efficient)")
-        end
+        return mem_estimates[:gmres] < config.memory_limit ? :gmres : :bicgstab
     end
-    
-    return method
 end
 
 """

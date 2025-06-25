@@ -215,7 +215,7 @@ function select_surface_nodes_by_plane(cache::SurfaceNodeCache,
     end
     
     println("Selected $(length(selected_nodes)) surface nodes on the specified plane")
-    println("Searched through $(length(cache.surface_nodes)) surface nodes (optimization factor: $(round(length(cache.surface_nodes)/length(cache.node_coordinates), digits=1))x)")
+    println("Searched through $(length(cache.surface_nodes)) surface nodes")
     
     return selected_nodes
 end
