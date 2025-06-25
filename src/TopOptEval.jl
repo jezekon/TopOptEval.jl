@@ -25,5 +25,7 @@ export import_mesh, create_material_model, setup_problem,
 
 export apply_volume_force!, apply_gravity!, apply_acceleration!, apply_variable_density_volume_force!
 
+export solve_system_adaptive, solve_system_robust, solve_system_robust_simp, SolverConfig
+
 end # module TopOptEval
 

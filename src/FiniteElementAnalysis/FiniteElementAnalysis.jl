@@ -9,13 +9,17 @@ using StaticArrays
 export create_material_model, setup_problem, assemble_stiffness_matrix!,
        get_node_dofs, apply_fixed_boundary!, apply_sliding_boundary!, apply_force!, solve_system,
        calculate_stresses, create_simp_material_model, assemble_stiffness_matrix_simp!,
-       calculate_stresses_simp, solve_system_simp
+       calculate_stresses_simp, solve_system_simp, solve_system_adaptive
 
 include("SelectNodesForBC.jl")
 export select_nodes_by_plane, select_nodes_by_circle
 
 include("VolumeForce.jl")
 export apply_volume_force!, apply_gravity!, apply_acceleration!, apply_variable_density_volume_force!
+
+# Include the robust solver module
+include("RobustSolver.jl")
+export solve_system_robust, solve_system_robust_simp, SolverConfig
 
 """
     create_material_model(youngs_modulus::Float64, poissons_ratio::Float64)
@@ -457,6 +461,26 @@ function solve_system(K, f, dh, cellvalues, λ, μ, constraints...)
     println("Maximum von Mises stress: $max_von_mises at cell $max_stress_cell")
     
     return u, deformation_energy, stress_field, max_von_mises, max_stress_cell
+end
+
+# Add a convenience function that automatically switches between solvers
+"""
+    solve_system_adaptive(K, f, dh, cellvalues, λ, μ, constraints...)
+
+Adaptive solver that automatically chooses between original and robust solver
+based on problem size.
+"""
+function solve_system_adaptive(K, f, dh, cellvalues, λ, μ, constraints...)
+    n = size(K, 1)
+    
+    # For small problems, use original solver
+    if n < 50000
+        return solve_system(K, f, dh, cellvalues, λ, μ, constraints...)
+    else
+        # For large problems, use robust solver with automatic configuration
+        config = SolverConfig(verbose=true)
+        return solve_system_robust(K, f, dh, cellvalues, λ, μ, constraints...; config=config)
+    end
 end
 
 """

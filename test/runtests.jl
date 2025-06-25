@@ -183,7 +183,7 @@ using TopOptEval.Utils
             # 3. Setup problem (initialize dof handler, cell values, matrices)
             dh, cellvalues, K, f = setup_problem(grid)
             
-            # 5. Apply boundary conditions - chapadlo specific
+            # 4. Apply boundary conditions - chapadlo specific
             # Fixed support - circle on face (vetknutí)
             fixed_nodes = select_nodes_by_circle(grid, [0.0, 75.0, 115.0], [0.0, -1.0, 0.0], 16.11, 1e-3) # ok
             
@@ -203,7 +203,7 @@ using TopOptEval.Utils
             export_boundary_conditions(grid, dh, all_constraint_nodes, all_force_nodes, "$(taskName)_boundary_conditions")
     
       # exit()
-            # 4. Assemble stiffness matrix
+            # 5. Assemble stiffness matrix
             assemble_stiffness_matrix!(K, f, dh, cellvalues, λ, μ)
 
             # 6. Apply boundary conditions
@@ -225,7 +225,7 @@ using TopOptEval.Utils
             apply_acceleration!(f, dh, cellvalues, [0.0, 6000.0, 0.0], ρ)
              
             # 7. Solve the system
-            u, energy, stress_field, max_von_mises, max_stress_cell = solve_system(K, f, dh, cellvalues, λ, μ, ch1, ch2)
+            u, energy, stress_field, max_von_mises, max_stress_cell = solve_system_adaptive(K, f, dh, cellvalues, λ, μ, ch1, ch2)
     
             # 8. Print deformation energy and maximum stress
             @info "Final deformation energy: $energy J"
