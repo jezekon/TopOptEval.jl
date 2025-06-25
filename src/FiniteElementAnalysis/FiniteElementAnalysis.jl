@@ -4,6 +4,8 @@ using Ferrite
 using LinearAlgebra
 using SparseArrays
 using StaticArrays
+using Preconditioners
+using Printf
 
 # Exported functions
 export create_material_model, setup_problem, assemble_stiffness_matrix!,
