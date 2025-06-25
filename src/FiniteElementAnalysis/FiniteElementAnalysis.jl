@@ -4,16 +4,24 @@ using Ferrite
 using LinearAlgebra
 using SparseArrays
 using StaticArrays
+using Preconditioners
+using Printf
 
 # Exported functions
 export create_material_model, setup_problem, assemble_stiffness_matrix!,
-       select_nodes_by_plane, select_nodes_by_circle, get_node_dofs,
-       apply_fixed_boundary!, apply_sliding_boundary!, apply_force!, solve_system,
+       get_node_dofs, apply_fixed_boundary!, apply_sliding_boundary!, apply_force!, solve_system,
        calculate_stresses, create_simp_material_model, assemble_stiffness_matrix_simp!,
-       calculate_stresses_simp, solve_system_simp
+       calculate_stresses_simp, solve_system_simp, solve_system_adaptive
+
+include("SelectNodesForBC.jl")
+export select_nodes_by_plane, select_nodes_by_circle
 
 include("VolumeForce.jl")
 export apply_volume_force!, apply_gravity!, apply_acceleration!, apply_variable_density_volume_force!
+
+# Include the robust solver module
+include("RobustSolver.jl")
+export solve_system_robust, solve_system_robust_simp, SolverConfig
 
 """
     create_material_model(youngs_modulus::Float64, poissons_ratio::Float64)
@@ -209,105 +217,6 @@ function get_node_dofs(dh::DofHandler)
     end
     
     return node_to_dofs
-end
-
-"""
-    select_nodes_by_plane(grid::Grid, 
-                          point::Vector{Float64}, 
-                          normal::Vector{Float64}, 
-                          tolerance::Float64=1e-6)
-
-Selects nodes that lie on a plane defined by a point and normal vector.
-
-Parameters:
-- `grid`: Computational mesh
-- `point`: A point on the plane [x, y, z]
-- `normal`: Normal vector to the plane [nx, ny, nz]
-- `tolerance`: Distance tolerance for node selection
-
-Returns:
-- Set of node IDs that lie on the plane
-"""
-function select_nodes_by_plane(grid::Grid, 
-                               point::Vector{Float64}, 
-                               normal::Vector{Float64}, 
-                               tolerance::Float64=1e-4)
-    # Normalize the normal vector
-    unit_normal = normal / norm(normal)
-    
-    # Extract number of nodes
-    num_nodes = getnnodes(grid)
-    selected_nodes = Set{Int}()
-    
-    # Check each node
-    for node_id in 1:num_nodes
-        coord = grid.nodes[node_id].x
-        
-        # Calculate distance from point to plane: d = (p - p0) · n
-        dist = abs(dot(coord - point, unit_normal))
-        
-        # If distance is within tolerance, node is on plane
-        if dist < tolerance
-            push!(selected_nodes, node_id)
-        end
-    end
-    
-    println("Selected $(length(selected_nodes)) nodes on the specified plane")
-    return selected_nodes
-end
-
-"""
-    select_nodes_by_circle(grid::Grid, 
-                           center::Vector{Float64}, 
-                           normal::Vector{Float64}, 
-                           radius::Float64, 
-                           tolerance::Float64=1e-6)
-
-Selects nodes that lie on a circular region defined by center, normal and radius.
-
-Parameters:
-- `grid`: Computational mesh
-- `center`: Center of the circle [x, y, z]
-- `normal`: Normal vector to the plane containing the circle [nx, ny, nz]
-- `radius`: Radius of the circle
-- `tolerance`: Distance tolerance for node selection
-
-Returns:
-- Set of node IDs that lie on the circular region
-"""
-function select_nodes_by_circle(grid::Grid, 
-                                center::Vector{Float64}, 
-                                normal::Vector{Float64}, 
-                                radius::Float64, 
-                                tolerance::Float64=1e-6)
-    # First, get nodes on the plane
-    nodes_on_plane = select_nodes_by_plane(grid, center, normal, tolerance)
-    
-    # Normalize the normal vector
-    unit_normal = normal / norm(normal)
-    
-    # Initialize set for nodes in circle
-    nodes_in_circle = Set{Int}()
-    
-    # Check which nodes are within the circle radius
-    for node_id in nodes_on_plane
-        coord = grid.nodes[node_id].x
-        
-        # Project the vector from center to node onto the plane
-        v = coord - center
-        projection = v - dot(v, unit_normal) * unit_normal
-        
-        # Calculate distance from center in the plane
-        dist = norm(projection)
-        
-        # If distance is less than radius, node is in the circle
-        if dist <= radius + tolerance
-            push!(nodes_in_circle, node_id)
-        end
-    end
-    
-    println("Selected $(length(nodes_in_circle)) nodes in the circular region")
-    return nodes_in_circle
 end
 
 """
@@ -554,6 +463,34 @@ function solve_system(K, f, dh, cellvalues, λ, μ, constraints...)
     println("Maximum von Mises stress: $max_von_mises at cell $max_stress_cell")
     
     return u, deformation_energy, stress_field, max_von_mises, max_stress_cell
+end
+
+# Add a convenience function that automatically switches between solvers
+"""
+    solve_system_adaptive(K, f, dh, cellvalues, λ, μ, constraints...)
+
+Adaptive solver that automatically chooses between original and robust solver
+based on problem size.
+"""
+function solve_system_adaptive(K, f, dh, cellvalues, λ, μ, constraints...)
+    n = size(K, 1)
+    
+    # Enhanced configuration with better defaults for convergence monitoring
+    if n < 50000
+        return solve_system(K, f, dh, cellvalues, λ, μ, constraints...)
+    else
+        # For large problems, use more conservative settings
+        config = SolverConfig(
+            method = :auto,
+            preconditioner = :diagonal,  # More stable for large problems
+            tolerance = 1e-7,            # Slightly relaxed tolerance
+            max_iterations = min(max(n ÷ 10, 5000), 50000),  # Adaptive iteration count
+            verbose = true,
+            restart = 30,
+            history = true
+        )
+        return solve_system_robust(K, f, dh, cellvalues, λ, μ, constraints...; config=config)
+    end
 end
 
 """
