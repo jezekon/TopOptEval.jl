@@ -284,12 +284,13 @@ function solve_with_krylov(K, f, method, config, matrix_props)
         P = I
     end
     
-    # Set up Krylov solver options
+    # Set up Krylov solver options - fix the restart parameter issue
     kwargs = Dict{Symbol, Any}(
         :atol => config.tolerance,
         :rtol => config.tolerance,  
         :itmax => config.max_iterations,
-        :verbose => config.verbose ? 1 : 0
+        :verbose => config.verbose ? 2 : 0,
+        :history => true
     )
     
     # Add preconditioner if available
@@ -297,68 +298,204 @@ function solve_with_krylov(K, f, method, config, matrix_props)
         kwargs[:M] = P
     end
     
-    # Solve based on method with proper error handling
+    # Print initial information
+    if config.verbose
+        println("\n" * "="^60)
+        println("KRYLOV SOLVER DETAILS")
+        println("="^60)
+        println("Method: $(uppercase(string(method)))")
+        println("Matrix size: $(n) × $(n)")
+        println("Non-zeros: $(nnz(K))")
+        println("Preconditioner: $(config.preconditioner)")
+        println("Target tolerance: $(config.tolerance)")
+        println("Max iterations: $(config.max_iterations)")
+        if method == :gmres
+            println("GMRES restart: $(config.restart)")
+        end
+        println("Symmetric: $(matrix_props.symmetric)")
+        println("Positive definite: $(matrix_props.positive_definite)")
+        println("-"^60)
+        println("Starting iterations...")
+    end
+    
+    # Solve based on method with enhanced error handling
     local stats
+    local success = false
+    
     try
         if method == :cg
             # Conjugate Gradient for symmetric positive definite matrices
+            if config.verbose
+                println("Using CG (Conjugate Gradient) solver...")
+            end
             u, stats = cg(K, f; kwargs...)
+            success = true
             
         elseif method == :minres
-            # MINRES for symmetric indefinite matrices
+            # MINRES for symmetric indefinite matrices  
+            if config.verbose
+                println("Using MINRES solver...")
+            end
             u, stats = minres(K, f; kwargs...)
+            success = true
             
         elseif method == :gmres
             # GMRES for general matrices
-            kwargs[:restart] = config.restart
-            u, stats = gmres(K, f; kwargs...)
+            if config.verbose
+                println("Using GMRES solver...")
+            end
+            # Handle restart parameter carefully
+            gmres_kwargs = copy(kwargs)
+            try
+                # Try with restart parameter first
+                gmres_kwargs[:restart] = config.restart
+                u, stats = gmres(K, f; gmres_kwargs...)
+                success = true
+            catch e
+                if config.verbose
+                    @warn "GMRES with restart parameter failed, trying without: $e"
+                end
+                # Remove restart parameter and try again
+                delete!(gmres_kwargs, :restart)
+                u, stats = gmres(K, f; gmres_kwargs...)
+                success = true
+            end
             
         elseif method == :bicgstab
             # BiCGSTAB for non-symmetric matrices (memory efficient)
+            if config.verbose
+                println("Using BiCGSTAB solver...")
+            end
             u, stats = bicgstab(K, f; kwargs...)
+            success = true
             
         else
             error("Unknown Krylov method: $method")
         end
         
     catch e
-        # Fallback to simpler method if the chosen method fails
+        success = false
         if config.verbose
-            @warn "Krylov method $method failed, attempting fallback to CG: $e"
+            @warn "Primary Krylov method $method failed: $e"
+            println("Attempting fallback to simple CG...")
         end
         
-        # Simple CG fallback without preconditioner
+        # Fallback to simple CG without preconditioner
         simple_kwargs = Dict{Symbol, Any}(
-            :atol => config.tolerance,
-            :rtol => config.tolerance,
+            :atol => config.tolerance * 10,  # Relax tolerance for fallback
+            :rtol => config.tolerance * 10,
             :itmax => config.max_iterations,
-            :verbose => 0
+            :verbose => config.verbose ? 2 : 0,
+            :history => true
         )
         
-        u, stats = cg(K, f; simple_kwargs...)
-    end
-    
-    # Report results with safety checks
-    if config.verbose
-        println("Solver: $(uppercase(string(method)))")
-        println("Iterations: $(stats.niter)")
-        println("Converged: $(stats.solved)")
-        
-        # Safe access to residual
-        if hasfield(typeof(stats), :residual) && length(stats.residual) > 0
-            println("Final residual: $(stats.residual[end])")
-        else
-            println("Residual: N/A")
+        try
+            u, stats = cg(K, f; simple_kwargs...)
+            success = true
+            if config.verbose
+                println("Fallback CG solver succeeded!")
+            end
+        catch e2
+            @error "Both primary and fallback solvers failed: $e2"
+            # Last resort: direct solver if matrix is small enough
+            if n < 100000
+                @warn "Attempting direct solve as last resort..."
+                u = K \ f
+                success = true
+                # Create dummy stats for consistency
+                stats = (solved = true, niter = 1, residual = [0.0])
+            else
+                rethrow(e2)
+            end
         end
     end
     
-    # Warn if not converged
-    if !stats.solved
-        @warn "Krylov solver did not converge after $(stats.niter) iterations. Consider adjusting tolerance or max iterations."
+    # Enhanced reporting with convergence analysis
+    if config.verbose
+        println("-"^60)
+        println("SOLVER RESULTS")
+        println("-"^60)
+        
+        if hasfield(typeof(stats), :niter)
+            println("Iterations completed: $(stats.niter)")
+            
+            # Print convergence progress every N iterations for monitoring
+            if hasfield(typeof(stats), :residual) && length(stats.residual) > 1
+                println("\nConvergence history (every 50th iteration):")
+                for i in 1:50:length(stats.residual)
+                    @printf("  Iteration %5d: residual = %.6e\n", i, stats.residual[i])
+                end
+                # Always show the last iteration
+                last_iter = length(stats.residual)
+                if last_iter % 50 != 1
+                    @printf("  Iteration %5d: residual = %.6e\n", last_iter, stats.residual[end])
+                end
+            end
+        end
+        
+        if hasfield(typeof(stats), :solved)
+            converged_status = stats.solved ? "✓ CONVERGED" : "✗ NOT CONVERGED"
+            println("\nStatus: $converged_status")
+        end
+        
+        # Try to get final residual from different possible fields
+        final_residual = nothing
+        if hasfield(typeof(stats), :residual) && length(stats.residual) > 0
+            final_residual = stats.residual[end]
+        elseif hasfield(typeof(stats), :residuals) && length(stats.residuals) > 0
+            final_residual = stats.residuals[end]
+        elseif hasfield(typeof(stats), :resnorm)
+            final_residual = stats.resnorm
+        end
+        
+        if final_residual !== nothing
+            println("Final residual: $(final_residual)")
+            println("Target tolerance: $(config.tolerance)")
+            println("Convergence ratio: $(final_residual / config.tolerance)")
+        end
+        
+        # Calculate actual residual for verification
+        actual_residual = norm(K * u - f)
+        println("Actual residual ||Ku - f||: $(actual_residual)")
+        
+        # Convergence quality assessment
+        if actual_residual < config.tolerance
+            println("✓ Solution satisfies tolerance requirement")
+        elseif actual_residual < config.tolerance * 100
+            println("⚠ Solution is reasonably accurate")
+        else
+            println("✗ Solution may be inaccurate")
+        end
+        
+        println("="^60)
+    end
+    
+    # Enhanced warning for non-convergence with suggestions
+    if hasfield(typeof(stats), :solved) && !stats.solved
+        actual_residual = norm(K * u - f)
+        final_residual_val = final_residual !== nothing ? final_residual : actual_residual
+        niter_val = hasfield(typeof(stats), :niter) ? stats.niter : "unknown"
+        
+        @warn """
+        Krylov solver did not converge after $niter_val iterations.
+        
+        Final residual: $final_residual_val
+        Actual residual: $actual_residual
+        Target tolerance: $(config.tolerance)
+        
+        Suggestions:
+        1. Increase max_iterations (current: $(config.max_iterations))
+        2. Relax tolerance (try $(config.tolerance * 100))
+        3. Try different preconditioner (current: $(config.preconditioner))
+        4. Try different method (current: $method, try :cg or :bicgstab)
+        5. Check matrix conditioning
+        6. Verify boundary conditions are properly applied
+        """
     end
     
     return u, stats
 end
+
 
 """
     solve_with_iterativesolvers(K, f, method, config)
@@ -437,6 +574,36 @@ function solve_system_robust(K, f, dh, cellvalues, λ, μ, constraints...;
     # Select solver method
     method = select_solver_method(K, config)
     
+    # Enhanced pre-solve diagnostics
+    if config.verbose
+        println("\n" * "="^60)
+        println("PRE-SOLVE DIAGNOSTICS")
+        println("="^60)
+        
+        # Memory estimates
+        mem_est = estimate_memory_usage(K)
+        println("Memory estimates:")
+        println("  Matrix storage: $(round(mem_est[:matrix_only], digits=2)) GB")
+        println("  Direct solver: $(round(mem_est[:direct], digits=2)) GB")
+        println("  CG solver: $(round(mem_est[:cg], digits=2)) GB")
+        println("  GMRES solver: $(round(mem_est[:gmres], digits=2)) GB")
+        
+        # Matrix condition estimation (for small matrices)
+        if size(K, 1) < 10000
+            try
+                κ = cond(Matrix(K))
+                println("Condition number: $(round(κ, digits=2))")
+                if κ > 1e12
+                    println("⚠ Matrix is ill-conditioned - convergence may be slow")
+                end
+            catch
+                println("Condition number: Could not compute")
+            end
+        end
+        
+        println("Selected method: $(uppercase(string(method)))")
+    end
+    
     # Solve the system
     u = zeros(size(f))
     solve_time = @elapsed begin
@@ -445,7 +612,7 @@ function solve_system_robust(K, f, dh, cellvalues, λ, μ, constraints...;
             u = K \ f
             
         else
-            # Use iterative solver
+            # Use iterative solver with enhanced monitoring
             if USE_KRYLOV
                 config.verbose && println("\nUsing Krylov.jl solver")
                 u, stats = solve_with_krylov(K, f, method, config, matrix_props)
@@ -456,7 +623,10 @@ function solve_system_robust(K, f, dh, cellvalues, λ, μ, constraints...;
         end
     end
     
-    config.verbose && println("Solve time: $(round(solve_time, digits=2)) seconds")
+    if config.verbose
+        println("\nSolve time: $(round(solve_time, digits=2)) seconds")
+        println("Solution vector norm: $(norm(u))")
+    end
     
     # Calculate deformation energy
     deformation_energy = 0.5 * dot(u, K * u)
@@ -465,13 +635,18 @@ function solve_system_robust(K, f, dh, cellvalues, λ, μ, constraints...;
     stress_field, max_von_mises, max_stress_cell = calculate_stresses(u, dh, cellvalues, λ, μ)
     
     if config.verbose
-        println("\nAnalysis complete")
-        println("Deformation energy: $deformation_energy J")
-        println("Maximum von Mises stress: $max_von_mises at cell $max_stress_cell")
+        println("\n" * "="^60)
+        println("FINAL ANALYSIS RESULTS")
+        println("="^60)
+        println("Deformation energy: $(round(deformation_energy, digits=6)) J")
+        println("Maximum von Mises stress: $(round(max_von_mises, digits=2)) Pa")
+        println("Max stress location: cell $(max_stress_cell)")
+        println("="^60)
     end
     
     return u, deformation_energy, stress_field, max_von_mises, max_stress_cell
 end
+
 
 """
     solve_system_robust_simp(K, f, dh, cellvalues, material_model, density_data, constraints...; 

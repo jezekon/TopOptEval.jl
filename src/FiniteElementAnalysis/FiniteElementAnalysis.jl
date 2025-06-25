@@ -473,12 +473,20 @@ based on problem size.
 function solve_system_adaptive(K, f, dh, cellvalues, λ, μ, constraints...)
     n = size(K, 1)
     
-    # For small problems, use original solver
+    # Enhanced configuration with better defaults for convergence monitoring
     if n < 50000
         return solve_system(K, f, dh, cellvalues, λ, μ, constraints...)
     else
-        # For large problems, use robust solver with automatic configuration
-        config = SolverConfig(verbose=true)
+        # For large problems, use more conservative settings
+        config = SolverConfig(
+            method = :auto,
+            preconditioner = :diagonal,  # More stable for large problems
+            tolerance = 1e-7,            # Slightly relaxed tolerance
+            max_iterations = min(max(n ÷ 10, 5000), 50000),  # Adaptive iteration count
+            verbose = true,
+            restart = 30,
+            history = true
+        )
         return solve_system_robust(K, f, dh, cellvalues, λ, μ, constraints...; config=config)
     end
 end
