@@ -223,29 +223,43 @@ Creates a preconditioner based on the configuration.
 function create_preconditioner(K::SparseMatrixCSC, config::SolverConfig; symmetric::Bool=true)
     if config.preconditioner == :none
         return I
+        
     elseif config.preconditioner == :diagonal
-        # Diagonal (Jacobi) preconditioner
+        # Diagonal (Jacobi) preconditioner - always safe
         D = diag(K)
-        # Ensure no zero diagonal elements
-        D[abs.(D) .< 1e-10] .= 1.0
+        # Ensure no zero or near-zero diagonal elements
+        D[abs.(D) .< 1e-12] .= 1.0
         return Diagonal(1.0 ./ D)
+        
     elseif config.preconditioner == :ilu
-        # Incomplete LU factorization
-        if symmetric && config.preconditioner == :ichol
-            # Try incomplete Cholesky for symmetric matrices
-            try
-                return CholeskyPreconditioner(K, config.drop_tolerance)
-            catch
-                config.verbose && println("IChol failed, falling back to ILU")
-                return ilu(K, τ = config.drop_tolerance)
-            end
-        else
+        # Incomplete LU factorization with fallback
+        try
             return ilu(K, τ = config.drop_tolerance)
+        catch e
+            config.verbose && @warn "ILU preconditioner failed, falling back to diagonal: $e"
+            D = diag(K)
+            D[abs.(D) .< 1e-12] .= 1.0
+            return Diagonal(1.0 ./ D)
         end
+        
     elseif config.preconditioner == :ichol
         # Incomplete Cholesky for symmetric positive definite
-        return CholeskyPreconditioner(K, config.drop_tolerance)
+        try
+            if symmetric
+                return CholeskyPreconditioner(K, config.drop_tolerance)
+            else
+                # Fall back to ILU for non-symmetric matrices
+                return ilu(K, τ = config.drop_tolerance)
+            end
+        catch e
+            config.verbose && @warn "IChol preconditioner failed, falling back to diagonal: $e"
+            D = diag(K)
+            D[abs.(D) .< 1e-12] .= 1.0
+            return Diagonal(1.0 ./ D)
+        end
+        
     else
+        @warn "Unknown preconditioner type: $(config.preconditioner), using identity"
         return I
     end
 end
@@ -259,69 +273,94 @@ function solve_with_krylov(K, f, method, config, matrix_props)
     n = length(f)
     u = zeros(n)
     
-    # Create preconditioner
-    P = create_preconditioner(K, config; symmetric=matrix_props.symmetric)
+    # Create preconditioner with proper error handling
+    P = try
+        create_preconditioner(K, config; symmetric=matrix_props.symmetric)
+    catch e
+        if config.verbose
+            @warn "Preconditioner creation failed, falling back to no preconditioning: $e"
+        end
+        P = I
+    end
     
-    # Set up Krylov solver options
-    kwargs = Dict(
+    # Set up Krylov solver options - explicitly type as Dict{Symbol, Any}
+    # This prevents type inference issues when adding the preconditioner
+    kwargs = Dict{Symbol, Any}(
         :atol => config.tolerance,
-        :rtol => config.tolerance,
+        :rtol => config.tolerance,  
         :itmax => config.max_iterations,
         :verbose => config.verbose ? 1 : 0,
         :history => config.history
     )
     
-    if method == :cg
-        # Conjugate Gradient for SPD matrices
-        if P != I
-            kwargs[:M] = P  # Preconditioner
-        end
-        
-        solver = CgSolver(n, n, typeof(u))
-        u, stats = cg!(solver, K, f; kwargs...)
-        
-    elseif method == :minres
-        # MINRES for symmetric indefinite matrices
-        if P != I
-            kwargs[:M] = P
-        end
-        
-        solver = MinresSolver(n, n, typeof(u))
-        u, stats = minres!(solver, K, f; kwargs...)
-        
-    elseif method == :gmres
-        # GMRES for general matrices
-        if P != I
-            kwargs[:M] = P
-        end
-        kwargs[:restart] = config.restart
-        
-        solver = GmresSolver(n, n, config.restart, typeof(u))
-        u, stats = gmres!(solver, K, f; kwargs...)
-        
-    elseif method == :bicgstab
-        # BiCGSTAB for non-symmetric matrices (memory efficient)
-        if P != I
-            kwargs[:M] = P
-        end
-        
-        solver = BicgstabSolver(n, n, typeof(u))
-        u, stats = bicgstab!(solver, K, f; kwargs...)
-        
-    else
-        error("Unknown Krylov method: $method")
+    # Add preconditioner if available (now safe due to Any typing)
+    if P != I
+        kwargs[:M] = P
     end
     
-    # Report results
+    # Solve based on method with proper error handling
+    local u, stats
+    try
+        if method == :cg
+            # Conjugate Gradient for symmetric positive definite matrices
+            solver = CgSolver(n, n, typeof(u))
+            u, stats = cg!(solver, K, f; kwargs...)
+            
+        elseif method == :minres
+            # MINRES for symmetric indefinite matrices
+            solver = MinresSolver(n, n, typeof(u))
+            u, stats = minres!(solver, K, f; kwargs...)
+            
+        elseif method == :gmres
+            # GMRES for general matrices
+            kwargs[:restart] = config.restart
+            solver = GmresSolver(n, n, config.restart, typeof(u))
+            u, stats = gmres!(solver, K, f; kwargs...)
+            
+        elseif method == :bicgstab
+            # BiCGSTAB for non-symmetric matrices (memory efficient)
+            solver = BicgstabSolver(n, n, typeof(u))
+            u, stats = bicgstab!(solver, K, f; kwargs...)
+            
+        else
+            error("Unknown Krylov method: $method")
+        end
+        
+    catch e
+        # Fallback to simpler method if the chosen method fails
+        if config.verbose
+            @warn "Krylov method $method failed, attempting fallback to CG: $e"
+        end
+        
+        # Simple CG fallback without preconditioner
+        simple_kwargs = Dict{Symbol, Any}(
+            :atol => config.tolerance,
+            :rtol => config.tolerance,
+            :itmax => config.max_iterations,
+            :verbose => 0
+        )
+        
+        solver = CgSolver(n, n, typeof(u))
+        u, stats = cg!(solver, K, f; simple_kwargs...)
+    end
+    
+    # Report results with safety checks
     if config.verbose
         println("Solver: $(uppercase(string(method)))")
         println("Iterations: $(stats.niter)")
         println("Converged: $(stats.solved)")
-        println("Residual: $(stats.residuals[end])")
+        
+        # Safe access to residuals array
+        if hasfield(typeof(stats), :residuals) && !isempty(stats.residuals)
+            println("Final residual: $(stats.residuals[end])")
+        else
+            println("Residual: N/A")
+        end
     end
     
+    # Warn if not converged
     if !stats.solved
-        @warn "Krylov solver did not converge after $(stats.niter) iterations"
+        @warn "Krylov solver did not converge after $(stats.niter) iterations. Consider adjusting tolerance or max iterations."
     end
     
     return u, stats
@@ -547,46 +586,3 @@ function SolverConfig_MemoryEfficient()
 end
 
 export SolverConfig_LargeSymmetric, SolverConfig_LargeGeneral, SolverConfig_MemoryEfficient
-
-# Example usage documentation
-"""
-    example_usage()
-
-Shows various ways to use the robust solver.
-
-# Examples
-
-## Automatic solver selection
-```julia
-config = SolverConfig()
-u, energy, stress_field, max_vm, max_cell = solve_system_robust(K, f, dh, cellvalues, λ, μ, ch; config=config)
-```
-
-## Force CG with IChol preconditioner (for symmetric problems)
-```julia
-config = SolverConfig(
-    method = :cg,
-    preconditioner = :ichol,
-    tolerance = 1e-10,
-    max_iterations = 2000
-)
-u, energy, stress_field, max_vm, max_cell = solve_system_robust(K, f, dh, cellvalues, λ, μ, ch; config=config)
-```
-
-## Use preset for large symmetric problems
-```julia
-config = SolverConfig_LargeSymmetric()
-u, energy, stress_field, max_vm, max_cell = solve_system_robust(K, f, dh, cellvalues, λ, μ, ch; config=config)
-```
-
-## Memory-constrained solving
-```julia
-config = SolverConfig(
-    method = :auto,
-    memory_limit = 4.0,  # Limit to 4 GB
-    preconditioner = :diagonal
-)
-u, energy, stress_field, max_vm, max_cell = solve_system_robust(K, f, dh, cellvalues, λ, μ, ch; config=config)
-```
-"""
-function example_usage() end
