@@ -5,5 +5,12 @@
 *vtk
 *inp
 
+# Tetgen data:
+*.edge
+*.ele
+*.face
+*.node
+*.smesh
+
 !data/*.vtu
 data/chapadlo/chapadlo_B-2.0-nodal_STL.stl
