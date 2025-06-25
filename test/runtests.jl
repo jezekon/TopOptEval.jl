@@ -9,8 +9,8 @@ using TopOptEval.Utils
 @testset "TopOptEval.jl" begin
     # Chapadlo test configuration flags
     RUN_raw_chapadlo = false
-    RUN_lin_chapadlo = true
-    RUN_sdf_chapadlo = false
+    RUN_lin_chapadlo = false
+    RUN_sdf_chapadlo = true
     
     # Raw results from SIMP method (density field) - chapadlo version
     if RUN_raw_chapadlo
@@ -59,7 +59,7 @@ using TopOptEval.Utils
             all_force_nodes = union(nozicky_nodes, kamera_nodes)
             all_constraint_nodes = union(fixed_nodes, symmetry_nodes)
             export_boundary_conditions(grid, dh, all_constraint_nodes, all_force_nodes, "$(taskName)_boundary_conditions")
-            
+      exit()
             # 7. Apply boundary conditions
             # Fixed boundary condition (all DOFs)
             ch1 = apply_fixed_boundary!(K, f, dh, fixed_nodes)
@@ -99,7 +99,7 @@ using TopOptEval.Utils
             taskName = "chapadlo_linear"
             
             # 1. Import mesh (tetrahedral mesh)
-            grid = import_mesh("../data/chapadlo/tet_chapadlo_B-2.0_TriMesh-A15_cut.vtu")
+            grid = import_mesh("../data/chapadlo/chapadlo_B-2.0-nodal_STL.vtu")
             volume = calculate_volume(grid)
             
             # 2. Setup material model - chapadlo parameters
@@ -132,6 +132,7 @@ using TopOptEval.Utils
             all_constraint_nodes = union(fixed_nodes, symmetry_nodes)
             export_boundary_conditions(grid, dh, all_constraint_nodes, all_force_nodes, "$(taskName)_boundary_conditions")
             
+      # exit()
             # 6. Apply boundary conditions
             # Fixed boundary condition (all DOFs)
             ch1 = apply_fixed_boundary!(K, f, dh, fixed_nodes)
@@ -182,28 +183,29 @@ using TopOptEval.Utils
             # 3. Setup problem (initialize dof handler, cell values, matrices)
             dh, cellvalues, K, f = setup_problem(grid)
             
-            # 4. Assemble stiffness matrix
-            assemble_stiffness_matrix!(K, f, dh, cellvalues, λ, μ)
-            
             # 5. Apply boundary conditions - chapadlo specific
             # Fixed support - circle on face (vetknutí)
-            fixed_nodes = select_nodes_by_circle(grid, [0.0, 75.0, 115.0], [0.0, -1.0, 0.0], 16.11, 1e-3)
+            fixed_nodes = select_nodes_by_circle(grid, [0.0, 75.0, 115.0], [0.0, -1.0, 0.0], 16.11, 1e-3) # ok
             
             # Symmetry - YZ plane at x = 0
-            symmetry_nodes = select_nodes_by_plane(grid, [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], 1e-3)
+            symmetry_nodes = select_nodes_by_plane(grid, [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], 1e-3) # ok
             
             # Force application points
             # Nožičky: plane at z = -90
-            nozicky_nodes = select_nodes_by_plane(grid, [0.0, 0.0, -90.0], [0.0, 0.0, 1.0], 1.0)
+            nozicky_nodes = select_nodes_by_plane(grid, [0.0, 0.0, -90.0], [0.0, 0.0, 1.0], 1.0) # ok
             
             # Kamera: circular region at z = 5
-            kamera_nodes = select_nodes_by_circle(grid, [0.0, 0.0, 5.0], [0.0, 0.0, 1.0], 21.5, 1e-3)
+            kamera_nodes = select_nodes_by_circle(grid, [0.0, 0.0, 5.02], [0.0, 0.0, 1.0], 21.5, 1e-1) # ok
     
             # Check if sets are correct:
             all_force_nodes = union(nozicky_nodes, kamera_nodes)
             all_constraint_nodes = union(fixed_nodes, symmetry_nodes)
             export_boundary_conditions(grid, dh, all_constraint_nodes, all_force_nodes, "$(taskName)_boundary_conditions")
     
+      # exit()
+            # 4. Assemble stiffness matrix
+            assemble_stiffness_matrix!(K, f, dh, cellvalues, λ, μ)
+
             # 6. Apply boundary conditions
             # Fixed boundary condition (all DOFs)
             ch1 = apply_fixed_boundary!(K, f, dh, fixed_nodes)
