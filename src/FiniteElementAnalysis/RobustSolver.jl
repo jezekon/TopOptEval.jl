@@ -283,44 +283,38 @@ function solve_with_krylov(K, f, method, config, matrix_props)
         P = I
     end
     
-    # Set up Krylov solver options - explicitly type as Dict{Symbol, Any}
-    # This prevents type inference issues when adding the preconditioner
+    # Set up Krylov solver options
     kwargs = Dict{Symbol, Any}(
         :atol => config.tolerance,
         :rtol => config.tolerance,  
         :itmax => config.max_iterations,
-        :verbose => config.verbose ? 1 : 0,
-        :history => config.history
+        :verbose => config.verbose ? 1 : 0
     )
     
-    # Add preconditioner if available (now safe due to Any typing)
+    # Add preconditioner if available
     if P != I
         kwargs[:M] = P
     end
     
     # Solve based on method with proper error handling
-    local u, stats
+    local stats
     try
         if method == :cg
             # Conjugate Gradient for symmetric positive definite matrices
-            solver = CgSolver(n, n, typeof(u))
-            u, stats = cg!(solver, K, f; kwargs...)
+            u, stats = cg(K, f; kwargs...)
             
         elseif method == :minres
             # MINRES for symmetric indefinite matrices
-            solver = MinresSolver(n, n, typeof(u))
-            u, stats = minres!(solver, K, f; kwargs...)
+            u, stats = minres(K, f; kwargs...)
             
         elseif method == :gmres
             # GMRES for general matrices
             kwargs[:restart] = config.restart
-            solver = GmresSolver(n, n, config.restart, typeof(u))
-            u, stats = gmres!(solver, K, f; kwargs...)
+            u, stats = gmres(K, f; kwargs...)
             
         elseif method == :bicgstab
             # BiCGSTAB for non-symmetric matrices (memory efficient)
-            solver = BicgstabSolver(n, n, typeof(u))
-            u, stats = bicgstab!(solver, K, f; kwargs...)
+            u, stats = bicgstab(K, f; kwargs...)
             
         else
             error("Unknown Krylov method: $method")
@@ -340,8 +334,7 @@ function solve_with_krylov(K, f, method, config, matrix_props)
             :verbose => 0
         )
         
-        solver = CgSolver(n, n, typeof(u))
-        u, stats = cg!(solver, K, f; simple_kwargs...)
+        u, stats = cg(K, f; simple_kwargs...)
     end
     
     # Report results with safety checks
@@ -350,9 +343,9 @@ function solve_with_krylov(K, f, method, config, matrix_props)
         println("Iterations: $(stats.niter)")
         println("Converged: $(stats.solved)")
         
-        # Safe access to residuals array
-        if hasfield(typeof(stats), :residuals) && !isempty(stats.residuals)
-            println("Final residual: $(stats.residuals[end])")
+        # Safe access to residual
+        if hasfield(typeof(stats), :residual) && length(stats.residual) > 0
+            println("Final residual: $(stats.residual[end])")
         else
             println("Residual: N/A")
         end
