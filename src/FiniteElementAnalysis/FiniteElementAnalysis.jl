@@ -12,7 +12,7 @@ export create_material_model, setup_problem, assemble_stiffness_matrix!,
        calculate_stresses_simp, solve_system_simp
 
 include("SelectNodesForBC.jl")
-select_nodes_by_plane, select_nodes_by_circle
+export select_nodes_by_plane, select_nodes_by_circle
 
 include("VolumeForce.jl")
 export apply_volume_force!, apply_gravity!, apply_acceleration!, apply_variable_density_volume_force!
