@@ -14,6 +14,7 @@ using Printf
 # Try to load Krylov.jl (preferred) or IterativeSolvers.jl (fallback)
 const has_krylov = try
     using Krylov
+    import Krylov: gmres, cg, minres, bicgstab
     true
 catch
     false
