@@ -8,9 +8,9 @@ using TopOptEval.Utils
 
 @testset "TopOptEval.jl" begin
     # Chapadlo test configuration flags
-    RUN_raw_chapadlo = true
+    RUN_raw_chapadlo = false
     RUN_lin_chapadlo = false
-    RUN_sdf_chapadlo = false
+    RUN_sdf_chapadlo = true
     
     # Raw results from SIMP method (density field) - chapadlo version
     if RUN_raw_chapadlo
@@ -76,8 +76,11 @@ using TopOptEval.Utils
             apply_force!(f, dh, collect(kamera_nodes), [0.0, 0.0, -500.0]) # mN
             
             # Apply acceleration: 6 m/s² in Y direction
-            apply_variable_density_volume_force!(f, dh, cellvalues, [0.0, 6000.0, 0.0], ρ)
-            
+            effective_densities = density_data .* ρ  # Kombinace SIMP hustoty a hustoty materiálu
+            acceleration_vector = [0.0, 6000.0, 0.0]  # m/s² = mm/s²
+
+            apply_variable_density_volume_force!(f, dh, cellvalues, acceleration_vector, effective_densities)
+
             # 8. Solve the system
             u, energy, stress_field, max_von_mises, max_stress_cell = solve_system_simp(K, f, dh, cellvalues, material_model, density_data, ch1, ch2)
     
