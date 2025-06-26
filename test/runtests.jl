@@ -8,8 +8,8 @@ using TopOptEval.Utils
 
 @testset "TopOptEval.jl" begin
     # Chapadlo test configuration flags
-    RUN_raw_chapadlo = false
-    RUN_lin_chapadlo = false
+    RUN_raw_chapadlo = true
+    RUN_lin_chapadlo = true
     RUN_sdf_chapadlo = true
     
     # Raw results from SIMP method (density field) - chapadlo version
@@ -31,6 +31,7 @@ using TopOptEval.Utils
             nu = 0.35       # Poisson's ratio
             Emin = 1e-8     # Minimum Young's modulus
             p = 3.0         # Penalization power
+            ρ = 1.04e-6     # kg/mm³
             
             # Create SIMP material model
             material_model = create_simp_material_model(E0, nu, Emin, p)
@@ -59,7 +60,7 @@ using TopOptEval.Utils
             all_force_nodes = union(nozicky_nodes, kamera_nodes)
             all_constraint_nodes = union(fixed_nodes, symmetry_nodes)
             export_boundary_conditions(grid, dh, all_constraint_nodes, all_force_nodes, "$(taskName)_boundary_conditions")
-      exit()
+      # exit()
             # 7. Apply boundary conditions
             # Fixed boundary condition (all DOFs)
             ch1 = apply_fixed_boundary!(K, f, dh, fixed_nodes)
@@ -75,7 +76,6 @@ using TopOptEval.Utils
             apply_force!(f, dh, collect(kamera_nodes), [0.0, 0.0, -500.0]) # mN
             
             # Apply acceleration: 6 m/s² in Y direction
-            ρ = 1.04e-6  # kg/mm³
             apply_acceleration!(f, dh, cellvalues, [0.0, 6000.0, 0.0], ρ)
             
             # 8. Solve the system
@@ -105,6 +105,7 @@ using TopOptEval.Utils
             # 2. Setup material model - chapadlo parameters
             E0 = 2.4e3      # MPa = N/mm²
             nu = 0.35       # Poisson's ratio
+            ρ = 1.04e-6     # kg/mm³
             λ, μ = create_material_model(E0, nu)
             
             # 3. Setup problem (initialize dof handler, cell values, matrices)
@@ -148,11 +149,10 @@ using TopOptEval.Utils
             apply_force!(f, dh, collect(kamera_nodes), [0.0, 0.0, -500.0]) # mN
             
             # Apply acceleration: 6 m/s² in Y direction
-            ρ = 1.04e-6  # kg/mm³
             apply_acceleration!(f, dh, cellvalues, [0.0, 6000.0, 0.0], ρ)
             
             # 7. Solve the system
-            u, energy, stress_field, max_von_mises, max_stress_cell = solve_system(K, f, dh, cellvalues, λ, μ, ch1, ch2)
+            u, energy, stress_field, max_von_mises, max_stress_cell = solve_system_adaptive(K, f, dh, cellvalues, λ, μ, ch1, ch2)
     
             # 8. Print deformation energy and maximum stress
             @info "Final deformation energy: $energy J"
@@ -178,6 +178,7 @@ using TopOptEval.Utils
             # 2. Setup material model - chapadlo parameters
             E0 = 2.4e3      # MPa = N/mm²
             nu = 0.35       # Poisson's ratio
+            ρ = 1.04e-6     # kg/mm³
             λ, μ = create_material_model(E0, nu)
             
             # 3. Setup problem (initialize dof handler, cell values, matrices)
@@ -221,11 +222,17 @@ using TopOptEval.Utils
             apply_force!(f, dh, collect(kamera_nodes), [0.0, 0.0, -500.0]) # mN
             
             # Apply acceleration: 6 m/s² in Y direction
-            ρ = 1.04e-6  # kg/mm³
             apply_acceleration!(f, dh, cellvalues, [0.0, 6000.0, 0.0], ρ)
-             
+            
             # 7. Solve the system
-            u, energy, stress_field, max_von_mises, max_stress_cell = solve_system_adaptive(K, f, dh, cellvalues, λ, μ, ch1, ch2)
+            config = SolverConfig(
+                method = :minres,
+                preconditioner = :diagonal,
+                tolerance = 1e-7,
+                max_iterations = 10000,
+                verbose = true)
+          
+            u, energy, stress_field, max_von_mises, max_stress_cell = solve_system_robust(K, f, dh, cellvalues, λ, μ, ch1, ch2; config)
     
             # 8. Print deformation energy and maximum stress
             @info "Final deformation energy: $energy J"

@@ -481,7 +481,7 @@ function solve_system_adaptive(K, f, dh, cellvalues, λ, μ, constraints...)
     else
         # For large problems, use more conservative settings
         config = SolverConfig(
-            method = :auto,
+            method = :auto, # gmres, cg, minres, bicgstab
             preconditioner = :diagonal,  # More stable for large problems
             tolerance = 1e-7,            # Slightly relaxed tolerance
             max_iterations = min(max(n ÷ 10, 5000), 50000),  # Adaptive iteration count
