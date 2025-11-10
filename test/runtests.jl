@@ -9,8 +9,8 @@ using TopOptEval.Utils
 @testset "TopOptEval.jl" begin
     # Chapadlo test configuration flags
     RUN_raw_chapadlo = false
-    RUN_lin_chapadlo = false
-    RUN_sdf_chapadlo = true
+    RUN_lin_chapadlo = true
+    RUN_sdf_chapadlo = false
     
     # Raw results from SIMP method (density field) - chapadlo version
     if RUN_raw_chapadlo
@@ -99,10 +99,10 @@ using TopOptEval.Utils
     if RUN_lin_chapadlo
         @testset "Linear_chapadlo" begin
             # Task configuration
-            taskName = "chapadlo_linear"
+            taskName = "chapadlo_linear_sub-2"
             
             # 1. Import mesh (tetrahedral mesh)
-            grid = import_mesh("../data/chapadlo/chapadlo_B-2.0-nodal_STL.vtu")
+            grid = import_mesh("../data/chapadlo/chapadlo_B-2.0-nodal_STL_sub-2.vtu")
             volume = calculate_volume(grid)
             
             # 2. Setup material model - chapadlo parameters
@@ -155,7 +155,16 @@ using TopOptEval.Utils
             apply_acceleration!(f, dh, cellvalues, [0.0, 6000.0, 0.0], ρ)
             
             # 7. Solve the system
-            u, energy, stress_field, max_von_mises, max_stress_cell = solve_system_adaptive(K, f, dh, cellvalues, λ, μ, ch1, ch2)
+            # 7. Solve the system
+            config = SolverConfig(
+                method = :minres, # cg, gmres
+                preconditioner = :diagonal,
+                tolerance = 1e-7,
+                max_iterations = 40000,
+                verbose = true)
+          
+            u, energy, stress_field, max_von_mises, max_stress_cell = solve_system_robust(K, f, dh, cellvalues, λ, μ, ch1, ch2; config)
+            # u, energy, stress_field, max_von_mises, max_stress_cell = solve_system_adaptive(K, f, dh, cellvalues, λ, μ, ch1, ch2)
     
             # 8. Print deformation energy and maximum stress
             @info "Final deformation energy: $energy J"
@@ -175,7 +184,8 @@ using TopOptEval.Utils
             taskName = "chapadlo_sdf"
             
             # 1. Import mesh (tetrahedral mesh)
-            grid = import_mesh("../data/chapadlo/tet_chapadlo_B-2.0_TriMesh-A15_cut.vtu")
+            # grid = import_mesh("../data/chapadlo/tet_chapadlo_B-2.0_TriMesh-A15_cut.vtu")
+            grid = import_mesh("../data/chapadlo/tet_chapadlo_B-2.0_TriMesh-Schlafli_cut.vtu")
             volume = Utils.calculate_volume(grid)
             
             # 2. Setup material model - chapadlo parameters
@@ -189,10 +199,10 @@ using TopOptEval.Utils
             
             # 4. Apply boundary conditions - chapadlo specific
             # Fixed support - circle on face (vetknutí)
-            fixed_nodes = select_nodes_by_circle(grid, [0.0, 75.0, 115.0], [0.0, -1.0, 0.0], 16.11, 1e-3) # ok
+            fixed_nodes = select_nodes_by_circle(grid, [0.0, 75.0, 115.0], [0.0, -1.0, 0.0], 16.11, 1e-1) # ok
             
             # Symmetry - YZ plane at x = 0
-            symmetry_nodes = select_nodes_by_plane(grid, [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], 1e-3) # ok
+            symmetry_nodes = select_nodes_by_plane(grid, [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], 1e-2) # ok
             
             # Force application points
             # Nožičky: plane at z = -90
