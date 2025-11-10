@@ -7,6 +7,7 @@ using TopOptEval.Utils
 
 @testset "TopOptEval.jl" begin
     # Chapadlo test configuration flags
+
     RUN_raw_chapadlo = true
     RUN_lin_chapadlo = false
     RUN_sdf_chapadlo = false
@@ -137,10 +138,12 @@ using TopOptEval.Utils
     if RUN_lin_chapadlo
         @testset "Linear_chapadlo" begin
             # Task configuration
+
             taskName = "chapadlo_linear"
 
             # 1. Import mesh (tetrahedral mesh)
             grid = import_mesh("Robot_gripper-tetgen.vtu")
+
             volume = calculate_volume(grid)
 
             # 2. Setup material model - chapadlo parameters
