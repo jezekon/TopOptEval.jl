@@ -58,34 +58,35 @@ Note: AbaqusReader.jl converts Abaqus element names (e.g., C3D8) to its own symb
 - To get results data (stress, displacement), you need to run FEA analysis first
 - Node ordering is adjusted to match VTK conventions where necessary
 """
-function InpToVtu(inp_file::String, output_file::String; verbose::Bool=true)
-    
+function InpToVtu(inp_file::String, output_file::String; verbose::Bool = true)
+
     # Input validation
     if !isfile(inp_file)
         error("Input file '$inp_file' does not exist")
     end
-    
+
     if !endswith(lowercase(inp_file), ".inp")
         @warn "Input file '$inp_file' does not have .inp extension"
     end
-    
+
     try
         verbose && println("📖 Reading Abaqus .inp file: $inp_file")
-        
+
         # Parse the .inp file using AbaqusReader
         mesh_data = abaqus_read_mesh(inp_file)
-        
+
         # Extract mesh components
         nodes = mesh_data["nodes"]           # Dict: Node ID => [x, y, z]
         elements = mesh_data["elements"]     # Dict: Element ID => [node1, node2, ...]
         element_types = mesh_data["element_types"]  # Dict: Element ID => Symbol
-        
-        verbose && println("   ✓ Found $(length(nodes)) nodes and $(length(elements)) elements")
-        
+
+        verbose &&
+            println("   ✓ Found $(length(nodes)) nodes and $(length(elements)) elements")
+
         # Convert nodes to WriteVTK format
         # WriteVTK expects a 3×N matrix where each column is [x, y, z] coordinates
         node_ids = sort(collect(keys(nodes)))
-        
+
         # Ensure we have 3D coordinates (pad with zeros if 2D)
         points = zeros(Float64, 3, length(node_ids))
         for (i, node_id) in enumerate(node_ids)
@@ -93,38 +94,38 @@ function InpToVtu(inp_file::String, output_file::String; verbose::Bool=true)
             points[1:length(coords), i] = coords
             # Z-coordinate remains 0.0 if not provided (2D case)
         end
-        
+
         verbose && println("   ✓ Processed node coordinates")
-        
+
         # Create node ID mapping for element connectivity
         # AbaqusReader gives actual node IDs, but WriteVTK expects 1-based indexing
         node_id_to_index = Dict(node_id => i for (i, node_id) in enumerate(node_ids))
-        
+
         # Convert elements to WriteVTK format
         cells = WriteVTK.MeshCell[]
-        element_type_counts = Dict{Symbol, Int}()
+        element_type_counts = Dict{Symbol,Int}()
         unsupported_types = Set{Symbol}()
-        
+
         for elem_id in sort(collect(keys(elements)))
             connectivity = elements[elem_id]
             elem_type = element_types[elem_id]
-            
+
             # Count element types for statistics
             element_type_counts[elem_type] = get(element_type_counts, elem_type, 0) + 1
-            
+
             # Map connectivity from node IDs to indices
             vtk_connectivity = [node_id_to_index[node_id] for node_id in connectivity]
-            
+
             # Convert Abaqus element type to VTK cell type
             vtk_cell = _abaqus_to_vtk_cell(elem_type, vtk_connectivity)
-            
+
             if vtk_cell !== nothing
                 push!(cells, vtk_cell)
             else
                 push!(unsupported_types, elem_type)
             end
         end
-        
+
         # Report element type statistics
         if verbose
             println("   ✓ Element type summary:")
@@ -133,32 +134,32 @@ function InpToVtu(inp_file::String, output_file::String; verbose::Bool=true)
                 println("     - $elem_type: $count elements ($status)")
             end
         end
-        
+
         # Warn about unsupported element types
         if !isempty(unsupported_types)
             @warn "Unsupported element types found: $(collect(unsupported_types)). These elements will be skipped."
         end
-        
+
         if isempty(cells)
             error("No supported elements found in the mesh")
         end
-        
+
         verbose && println("   ✓ Successfully converted $(length(cells)) elements")
-        
+
         # Write VTU file
         verbose && println("💾 Writing VTU file: $(output_file).vtu")
-        
+
         vtk_grid(output_file, points, cells) do vtk
             # Only mesh geometry - no additional data
         end
-        
+
         verbose && println("✅ Conversion completed successfully!")
         verbose && println("   Output file: $(output_file).vtu")
         verbose && println("   Nodes: $(length(node_ids))")
         verbose && println("   Elements: $(length(cells))")
-        
+
         return true
-        
+
     catch e
         @error "Failed to convert .inp to .vtu: $(e)"
         return false
@@ -187,82 +188,85 @@ AbaqusReader.jl converts Abaqus element names to its own symbol format:
 etc.
 """
 function _abaqus_to_vtk_cell(abaqus_type::Symbol, connectivity::Vector{Int})
-    
+
     # Define mapping from AbaqusReader symbols to VTK element types
     # Note: AbaqusReader converts C3D8 to :Hex8, C3D4 to :Tet4, etc.
-    
+
     # Linear hexahedral elements
     if abaqus_type == :Hex8 || abaqus_type == :C3D8  # 8-node linear hexahedron
         # VTK hexahedron node order: bottom face (1,2,3,4), top face (5,6,7,8)
         # AbaqusReader should maintain correct node ordering
         return WriteVTK.MeshCell(WriteVTK.VTKCellTypes.VTK_HEXAHEDRON, connectivity)
-        
-    # Linear tetrahedral elements  
+
+        # Linear tetrahedral elements  
     elseif abaqus_type == :Tet4 || abaqus_type == :C3D4  # 4-node linear tetrahedron
         # Abaqus and VTK have same node ordering for tetrahedra
         return WriteVTK.MeshCell(WriteVTK.VTKCellTypes.VTK_TETRA, connectivity)
-        
-    # Quadratic hexahedral elements
+
+        # Quadratic hexahedral elements
     elseif abaqus_type == :Hex20 || abaqus_type == :C3D20  # 20-node quadratic hexahedron
-        return WriteVTK.MeshCell(WriteVTK.VTKCellTypes.VTK_QUADRATIC_HEXAHEDRON, connectivity)
-        
-    # Quadratic tetrahedral elements
+        return WriteVTK.MeshCell(
+            WriteVTK.VTKCellTypes.VTK_QUADRATIC_HEXAHEDRON,
+            connectivity,
+        )
+
+        # Quadratic tetrahedral elements
     elseif abaqus_type == :Tet10 || abaqus_type == :C3D10  # 10-node quadratic tetrahedron
         return WriteVTK.MeshCell(WriteVTK.VTKCellTypes.VTK_QUADRATIC_TETRA, connectivity)
-        
-    # Wedge/Prism elements
+
+        # Wedge/Prism elements
     elseif abaqus_type == :Wedge6 || abaqus_type == :C3D6  # 6-node wedge
         return WriteVTK.MeshCell(WriteVTK.VTKCellTypes.VTK_WEDGE, connectivity)
-        
+
     elseif abaqus_type == :Wedge15 || abaqus_type == :C3D15  # 15-node quadratic wedge
         return WriteVTK.MeshCell(WriteVTK.VTKCellTypes.VTK_QUADRATIC_WEDGE, connectivity)
-        
-    # Shell elements
+
+        # Shell elements
     elseif abaqus_type == :Tri3 || abaqus_type == :S3  # 3-node triangle shell
         return WriteVTK.MeshCell(WriteVTK.VTKCellTypes.VTK_TRIANGLE, connectivity)
-        
+
     elseif abaqus_type == :Quad4 || abaqus_type == :S4  # 4-node quadrilateral shell
         return WriteVTK.MeshCell(WriteVTK.VTKCellTypes.VTK_QUAD, connectivity)
-        
+
     elseif abaqus_type == :Tri6 || abaqus_type == :S6  # 6-node quadratic triangle
         return WriteVTK.MeshCell(WriteVTK.VTKCellTypes.VTK_QUADRATIC_TRIANGLE, connectivity)
-        
+
     elseif abaqus_type == :Quad8 || abaqus_type == :S8  # 8-node quadratic quadrilateral
         return WriteVTK.MeshCell(WriteVTK.VTKCellTypes.VTK_QUADRATIC_QUAD, connectivity)
-        
-    # Truss/Beam elements
+
+        # Truss/Beam elements
     elseif abaqus_type == :Seg2 || abaqus_type == :T3D2  # 2-node truss element
         return WriteVTK.MeshCell(WriteVTK.VTKCellTypes.VTK_LINE, connectivity)
-        
+
     elseif abaqus_type == :Seg3 || abaqus_type == :T3D3  # 3-node quadratic truss
         return WriteVTK.MeshCell(WriteVTK.VTKCellTypes.VTK_QUADRATIC_EDGE, connectivity)
-        
-    # Plane stress/strain elements (2D elements)
+
+        # Plane stress/strain elements (2D elements)
     elseif abaqus_type == :CPE3 || abaqus_type == :CPS3  # 3-node plane element
         return WriteVTK.MeshCell(WriteVTK.VTKCellTypes.VTK_TRIANGLE, connectivity)
-        
+
     elseif abaqus_type == :CPE4 || abaqus_type == :CPS4  # 4-node plane element
         return WriteVTK.MeshCell(WriteVTK.VTKCellTypes.VTK_QUAD, connectivity)
-        
+
     elseif abaqus_type == :CPE6 || abaqus_type == :CPS6  # 6-node quadratic plane element
         return WriteVTK.MeshCell(WriteVTK.VTKCellTypes.VTK_QUADRATIC_TRIANGLE, connectivity)
-        
+
     elseif abaqus_type == :CPE8 || abaqus_type == :CPS8  # 8-node quadratic plane element
         return WriteVTK.MeshCell(WriteVTK.VTKCellTypes.VTK_QUADRATIC_QUAD, connectivity)
-        
-    # Axisymmetric elements
+
+        # Axisymmetric elements
     elseif abaqus_type == :CAX3  # 3-node axisymmetric element
         return WriteVTK.MeshCell(WriteVTK.VTKCellTypes.VTK_TRIANGLE, connectivity)
-        
+
     elseif abaqus_type == :CAX4  # 4-node axisymmetric element
         return WriteVTK.MeshCell(WriteVTK.VTKCellTypes.VTK_QUAD, connectivity)
-        
+
     elseif abaqus_type == :CAX6  # 6-node quadratic axisymmetric element
         return WriteVTK.MeshCell(WriteVTK.VTKCellTypes.VTK_QUADRATIC_TRIANGLE, connectivity)
-        
+
     elseif abaqus_type == :CAX8  # 8-node quadratic axisymmetric element
         return WriteVTK.MeshCell(WriteVTK.VTKCellTypes.VTK_QUADRATIC_QUAD, connectivity)
-        
+
     else
         # Unsupported element type - log it for debugging
         @debug "Unsupported element type: $abaqus_type"
@@ -287,7 +291,11 @@ This allows users to add custom element type mappings.
 add_element_type_support!(:MY_ELEMENT, WriteVTK.VTKCellTypes.VTK_TRIANGLE)
 ```
 """
-function add_element_type_support!(abaqus_type::Symbol, vtk_type, node_reorder_func=identity)
+function add_element_type_support!(
+    abaqus_type::Symbol,
+    vtk_type,
+    node_reorder_func = identity,
+)
     # This would require modifying the global mapping
     # For now, users should modify _abaqus_to_vtk_cell directly
     @warn "Custom element type addition not implemented yet. Please modify _abaqus_to_vtk_cell function."
@@ -312,53 +320,57 @@ function validate_inp_file(inp_file::String)
         "has_nodes" => false,
         "has_elements" => false,
         "warnings" => String[],
-        "errors" => String[]
+        "errors" => String[],
     )
-    
+
     if !validation_results["file_exists"]
         push!(validation_results["errors"], "File does not exist: $inp_file")
         return validation_results
     end
-    
+
     try
         # Try to read the file
         mesh_data = abaqus_read_mesh(inp_file)
         validation_results["file_readable"] = true
-        
+
         # Check for nodes and elements
-        validation_results["has_nodes"] = haskey(mesh_data, "nodes") && !isempty(mesh_data["nodes"])
-        validation_results["has_elements"] = haskey(mesh_data, "elements") && !isempty(mesh_data["elements"])
-        
+        validation_results["has_nodes"] =
+            haskey(mesh_data, "nodes") && !isempty(mesh_data["nodes"])
+        validation_results["has_elements"] =
+            haskey(mesh_data, "elements") && !isempty(mesh_data["elements"])
+
         if !validation_results["has_nodes"]
             push!(validation_results["errors"], "No nodes found in the mesh")
         end
-        
+
         if !validation_results["has_elements"]
             push!(validation_results["errors"], "No elements found in the mesh")
         end
-        
+
         # Check for unsupported element types
         if haskey(mesh_data, "element_types")
             element_types = mesh_data["element_types"]
             unsupported = Set{Symbol}()
-            
+
             for elem_type in values(element_types)
                 if _abaqus_to_vtk_cell(elem_type, [1, 2, 3, 4]) === nothing  # Test with dummy connectivity
                     push!(unsupported, elem_type)
                 end
             end
-            
+
             if !isempty(unsupported)
-                push!(validation_results["warnings"], 
-                      "Unsupported element types found: $(collect(unsupported))")
+                push!(
+                    validation_results["warnings"],
+                    "Unsupported element types found: $(collect(unsupported))",
+                )
             end
         end
-        
+
     catch e
         validation_results["file_readable"] = false
         push!(validation_results["errors"], "Failed to read file: $(e)")
     end
-    
+
     return validation_results
 end
 
@@ -378,23 +390,23 @@ function inspect_inp_elements(inp_file::String)
     if !isfile(inp_file)
         error("File does not exist: $inp_file")
     end
-    
+
     println("🔍 Inspecting element types in: $inp_file")
-    
+
     try
         mesh_data = abaqus_read_mesh(inp_file)
         elements = mesh_data["elements"]
         element_types = mesh_data["element_types"]
-        
+
         # Count each element type
-        type_counts = Dict{Symbol, Int}()
+        type_counts = Dict{Symbol,Int}()
         for elem_type in values(element_types)
             type_counts[elem_type] = get(type_counts, elem_type, 0) + 1
         end
-        
+
         println("\n📊 Element Type Summary:")
         println("=" ^ 50)
-        
+
         total_elements = 0
         for (elem_type, count) in sort(collect(type_counts))
             supported = _abaqus_to_vtk_cell(elem_type, [1, 2, 3, 4]) !== nothing
@@ -402,18 +414,18 @@ function inspect_inp_elements(inp_file::String)
             println("   $elem_type: $count elements ($status)")
             total_elements += count
         end
-        
+
         println("=" ^ 50)
         println("   Total: $total_elements elements")
-        
+
         # Return detailed information
         result = Dict(
             "total_elements" => total_elements,
             "element_counts" => type_counts,
             "supported_types" => Symbol[],
-            "unsupported_types" => Symbol[]
+            "unsupported_types" => Symbol[],
         )
-        
+
         for elem_type in keys(type_counts)
             if _abaqus_to_vtk_cell(elem_type, [1, 2, 3, 4]) !== nothing
                 push!(result["supported_types"], elem_type)
@@ -421,9 +433,9 @@ function inspect_inp_elements(inp_file::String)
                 push!(result["unsupported_types"], elem_type)
             end
         end
-        
+
         return result
-        
+
     catch e
         @error "Failed to inspect file: $e"
         return Dict("error" => string(e))
@@ -437,13 +449,13 @@ end
 Test function to demonstrate the conversion process.
 Creates a simple example if no file is provided.
 """
-function test_conversion(inp_file::String="test.inp")
+function test_conversion(inp_file::String = "test.inp")
     println("🧪 Testing InpToVtu conversion...")
-    
+
     # Validate file first
     println("📋 Validating input file...")
     validation = validate_inp_file(inp_file)
-    
+
     if !isempty(validation["errors"])
         println("❌ Validation failed:")
         for error in validation["errors"]
@@ -451,18 +463,18 @@ function test_conversion(inp_file::String="test.inp")
         end
         return false
     end
-    
+
     if !isempty(validation["warnings"])
         println("⚠️  Validation warnings:")
         for warning in validation["warnings"]
             println("   • $warning")
         end
     end
-    
+
     # Perform conversion
     output_name = splitext(inp_file)[1] * "_converted"
-    success = InpToVtu(inp_file, output_name, verbose=true)
-    
+    success = InpToVtu(inp_file, output_name, verbose = true)
+
     if success
         println("🎉 Test completed successfully!")
         println("   Input: $inp_file")

@@ -26,7 +26,7 @@ mutable struct SurfaceNodeCache
     node_coordinates::Vector{Vec{3,Float64}}
     node_id_map::Dict{Int,Int}
     computed::Bool
-    
+
     # Constructor for empty cache
     SurfaceNodeCache() = new(Set{Int}(), Vec{3,Float64}[], Dict{Int,Int}(), false)
 end
@@ -53,29 +53,29 @@ Returns:
 function extract_surface_nodes!(cache::SurfaceNodeCache, grid::Grid)
     # Dictionary to store face connectivity and count occurrences
     # Key: sorted tuple of node IDs, Value: count of elements sharing this face
-    face_count = Dict{Tuple{Vararg{Int}}, Int}()
-    
+    face_count = Dict{Tuple{Vararg{Int}},Int}()
+
     # Iterate through all cells to find their faces
-    for cell_idx in 1:getncells(grid)
+    for cell_idx = 1:getncells(grid)
         cell = getcells(grid, cell_idx)
-        
+
         # Get all faces of the current cell
         faces = get_faces(cell)
-        
+
         # Process each face
         for face_nodes in faces
             # Sort node IDs to create a canonical representation of the face
             # This ensures that faces shared by two elements are properly counted
             sorted_face = Tuple(sort(face_nodes))
-            
+
             # Count how many elements this face belongs to
             face_count[sorted_face] = get(face_count, sorted_face, 0) + 1
         end
     end
-    
+
     # Extract surface faces (faces that belong to only one element)
     surface_faces = [face for (face, count) in face_count if count == 1]
-    
+
     # Extract unique surface nodes from all surface faces
     surface_node_set = Set{Int}()
     for face in surface_faces
@@ -83,15 +83,15 @@ function extract_surface_nodes!(cache::SurfaceNodeCache, grid::Grid)
             push!(surface_node_set, node_id)
         end
     end
-    
+
     # Create mapping from global node ID to local index in surface arrays
     node_id_map = Dict{Int,Int}()
     node_coordinates = Vec{3,Float64}[]
-    
+
     # Build coordinate array and mapping for surface nodes only
     for (local_idx, node_id) in enumerate(sort(collect(surface_node_set)))
         node_id_map[node_id] = local_idx
-        
+
         # Get node coordinates and ensure 3D representation
         coord = grid.nodes[node_id].x
         if length(coord) == 3
@@ -101,15 +101,19 @@ function extract_surface_nodes!(cache::SurfaceNodeCache, grid::Grid)
             push!(node_coordinates, Vec{3,Float64}(coord[1], coord[2], 0.0))
         end
     end
-    
+
     # Update cache with computed data
     cache.surface_nodes = surface_node_set
     cache.node_coordinates = node_coordinates
     cache.node_id_map = node_id_map
     cache.computed = true
-    
-    println("Surface extraction complete: $(length(surface_node_set)) surface nodes out of $(getnnodes(grid)) total nodes")
-    println("Surface coverage: $(round(length(surface_node_set)/getnnodes(grid)*100, digits=1))%")
+
+    println(
+        "Surface extraction complete: $(length(surface_node_set)) surface nodes out of $(getnnodes(grid)) total nodes",
+    )
+    println(
+        "Surface coverage: $(round(length(surface_node_set)/getnnodes(grid)*100, digits=1))%",
+    )
 end
 
 """
@@ -129,7 +133,7 @@ function get_faces(cell::Ferrite.Tetrahedron)
         [cell.nodes[1], cell.nodes[2], cell.nodes[3]], # Face 1: nodes 1-2-3
         [cell.nodes[1], cell.nodes[2], cell.nodes[4]], # Face 2: nodes 1-2-4  
         [cell.nodes[2], cell.nodes[3], cell.nodes[4]], # Face 3: nodes 2-3-4
-        [cell.nodes[1], cell.nodes[3], cell.nodes[4]]  # Face 4: nodes 1-3-4
+        [cell.nodes[1], cell.nodes[3], cell.nodes[4]],  # Face 4: nodes 1-3-4
     ]
 end
 
@@ -140,7 +144,7 @@ function get_faces(cell::Ferrite.Hexahedron)
         [cell.nodes[1], cell.nodes[2], cell.nodes[6], cell.nodes[5]], # Front face (y=0)
         [cell.nodes[2], cell.nodes[3], cell.nodes[7], cell.nodes[6]], # Right face (x=1)
         [cell.nodes[3], cell.nodes[4], cell.nodes[8], cell.nodes[7]], # Back face (y=1)
-        [cell.nodes[4], cell.nodes[1], cell.nodes[5], cell.nodes[8]]  # Left face (x=0)
+        [cell.nodes[4], cell.nodes[1], cell.nodes[5], cell.nodes[8]],  # Left face (x=0)
     ]
 end
 
@@ -148,7 +152,7 @@ function get_faces(cell::Ferrite.Triangle)
     return [
         [cell.nodes[1], cell.nodes[2]], # Edge 1: nodes 1-2
         [cell.nodes[2], cell.nodes[3]], # Edge 2: nodes 2-3
-        [cell.nodes[3], cell.nodes[1]]  # Edge 3: nodes 3-1
+        [cell.nodes[3], cell.nodes[1]],  # Edge 3: nodes 3-1
     ]
 end
 
@@ -157,7 +161,7 @@ function get_faces(cell::Ferrite.Quadrilateral)
         [cell.nodes[1], cell.nodes[2]], # Edge 1: nodes 1-2
         [cell.nodes[2], cell.nodes[3]], # Edge 2: nodes 2-3
         [cell.nodes[3], cell.nodes[4]], # Edge 3: nodes 3-4
-        [cell.nodes[4], cell.nodes[1]]  # Edge 4: nodes 4-1
+        [cell.nodes[4], cell.nodes[1]],  # Edge 4: nodes 4-1
     ]
 end
 
@@ -182,41 +186,47 @@ Returns:
 Throws:
 - `ArgumentError`: If cache has not been computed yet
 """
-function select_surface_nodes_by_plane(cache::SurfaceNodeCache,
-                                       point::Vector{Float64}, 
-                                       normal::Vector{Float64}, 
-                                       tolerance::Float64=1.0)
+function select_surface_nodes_by_plane(
+    cache::SurfaceNodeCache,
+    point::Vector{Float64},
+    normal::Vector{Float64},
+    tolerance::Float64 = 1.0,
+)
     # Validate that cache has been computed
     if !cache.computed
-        throw(ArgumentError("Surface node cache has not been computed. Call extract_surface_nodes! first."))
+        throw(
+            ArgumentError(
+                "Surface node cache has not been computed. Call extract_surface_nodes! first.",
+            ),
+        )
     end
-    
+
     # Normalize the normal vector to ensure consistent distance calculations
     unit_normal = normal / norm(normal)
-    
+
     # Initialize set to store selected nodes
     selected_nodes = Set{Int}()
-    
+
     # Iterate only through surface nodes (much faster than all nodes)
     for node_id in cache.surface_nodes
         # Get pre-computed coordinates from cache
         local_idx = cache.node_id_map[node_id]
         coord = cache.node_coordinates[local_idx]
-        
+
         # Calculate perpendicular distance from node to plane
         # Distance formula: |((node - point) · normal)| / |normal|
         # Since normal is already normalized, we can omit division
         dist = abs(dot(coord - point, unit_normal))
-        
+
         # Select node if it's within specified tolerance of the plane
         if dist < tolerance
             push!(selected_nodes, node_id)
         end
     end
-    
+
     println("Selected $(length(selected_nodes)) surface nodes on the specified plane")
     println("Searched through $(length(cache.surface_nodes)) surface nodes")
-    
+
     return selected_nodes
 end
 
@@ -243,56 +253,62 @@ Returns:
 Throws:
 - `ArgumentError`: If cache has not been computed yet
 """
-function select_surface_nodes_by_circle(cache::SurfaceNodeCache,
-                                        center::Vector{Float64}, 
-                                        normal::Vector{Float64}, 
-                                        radius::Float64, 
-                                        tolerance::Float64=1.0)
+function select_surface_nodes_by_circle(
+    cache::SurfaceNodeCache,
+    center::Vector{Float64},
+    normal::Vector{Float64},
+    radius::Float64,
+    tolerance::Float64 = 1.0,
+)
     # Validate that cache has been computed
     if !cache.computed
-        throw(ArgumentError("Surface node cache has not been computed. Call extract_surface_nodes! first."))
+        throw(
+            ArgumentError(
+                "Surface node cache has not been computed. Call extract_surface_nodes! first.",
+            ),
+        )
     end
-    
+
     # First, find surface nodes that lie on the plane containing the circle
     nodes_on_plane = select_surface_nodes_by_plane(cache, center, normal, tolerance)
-    
+
     # Normalize the normal vector for consistent calculations
     unit_normal = normal / norm(normal)
-    
+
     # Initialize set for nodes within the circular region
     nodes_in_circle = Set{Int}()
-    
+
     # Check which plane nodes are within the circle radius
     for node_id in nodes_on_plane
         # Get node coordinates from cache
         local_idx = cache.node_id_map[node_id]
         coord = cache.node_coordinates[local_idx]
-        
+
         # Calculate vector from circle center to node
         center_to_node = coord - center
-        
+
         # Project this vector onto the plane (remove component along normal)
         # This gives us the position of the node within the plane
         plane_projection = center_to_node - dot(center_to_node, unit_normal) * unit_normal
-        
+
         # Calculate distance from center within the plane
         planar_distance = norm(plane_projection)
-        
+
         # Include node if it's within the circle radius (with tolerance)
         if planar_distance <= radius + tolerance
             push!(nodes_in_circle, node_id)
         end
     end
-    
+
     println("Selected $(length(nodes_in_circle)) surface nodes in the circular region")
-    
+
     return nodes_in_circle
 end
 
 # Convenience functions with automatic caching for backward compatibility
 
 # Global cache storage for automatic caching (one cache per grid)
-const GRID_CACHE_STORAGE = Dict{UInt, SurfaceNodeCache}()
+const GRID_CACHE_STORAGE = Dict{UInt,SurfaceNodeCache}()
 
 """
     get_or_create_cache(grid::Grid)
@@ -309,7 +325,7 @@ Returns:
 function get_or_create_cache(grid::Grid)
     # Use grid object hash as unique identifier
     grid_hash = hash(grid)
-    
+
     # Return existing cache or create new one
     if haskey(GRID_CACHE_STORAGE, grid_hash)
         cache = GRID_CACHE_STORAGE[grid_hash]
@@ -344,13 +360,15 @@ Parameters:
 Returns:
 - `Set{Int}`: Set of surface node IDs that lie on the specified plane
 """
-function select_nodes_by_plane(grid::Grid, 
-                               point::Vector{Float64}, 
-                               normal::Vector{Float64}, 
-                               tolerance::Float64=1.0)
+function select_nodes_by_plane(
+    grid::Grid,
+    point::Vector{Float64},
+    normal::Vector{Float64},
+    tolerance::Float64 = 1.0,
+)
     # Get or create cache automatically
     cache = get_or_create_cache(grid)
-    
+
     # Use optimized surface-only selection
     return select_surface_nodes_by_plane(cache, point, normal, tolerance)
 end
@@ -375,14 +393,16 @@ Parameters:
 Returns:
 - `Set{Int}`: Set of surface node IDs that lie within the circular region
 """
-function select_nodes_by_circle(grid::Grid, 
-                                center::Vector{Float64}, 
-                                normal::Vector{Float64}, 
-                                radius::Float64, 
-                                tolerance::Float64=1.0)
+function select_nodes_by_circle(
+    grid::Grid,
+    center::Vector{Float64},
+    normal::Vector{Float64},
+    radius::Float64,
+    tolerance::Float64 = 1.0,
+)
     # Get or create cache automatically
     cache = get_or_create_cache(grid)
-    
+
     # Use optimized surface-only selection
     return select_surface_nodes_by_circle(cache, center, normal, radius, tolerance)
 end

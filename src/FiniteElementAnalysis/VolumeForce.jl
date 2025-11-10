@@ -23,69 +23,70 @@ where:
 Returns:
 - nothing (modifies f in-place)
 """
-function apply_volume_force!(f, dh, cellvalues, body_force_vector, density=1.0)
+function apply_volume_force!(f, dh, cellvalues, body_force_vector, density = 1.0)
     # Convert body force to per unit mass if given per unit volume
     # If body_force_vector is already per unit mass (like gravity), use density=1.0
     body_force_per_mass = body_force_vector ./ density
-    
+
     # Number of basis functions per element
     n_basefuncs = getnbasefunctions(cellvalues)
-    
+
     # Element load vector for body forces
     fe_body = zeros(n_basefuncs)
-    
+
     # Track total applied force for reporting
     total_force_applied = zeros(3)
     total_volume = 0.0
-    
+
     # Iterate over all cells to apply volume forces
     for cell in CellIterator(dh)
         # Reinitialize cell values for current cell
         reinit!(cellvalues, cell)
-        
+
         # Reset element load vector
         fill!(fe_body, 0.0)
-        
+
         # Get cell DOFs
         cell_dofs = celldofs(cell)
-        
+
         # Integrate body force over the element volume
-        for q_point in 1:getnquadpoints(cellvalues)
+        for q_point = 1:getnquadpoints(cellvalues)
             # Get integration weight and volume element
             dΩ = getdetJdV(cellvalues, q_point)
             total_volume += dΩ
-            
+
             # Loop over all basis functions (DOFs in the element)
-            for i in 1:n_basefuncs
+            for i = 1:n_basefuncs
                 # Get shape function value at this quadrature point
                 # For vector interpolation, this returns a Vec{3, Float64}
                 N_vec = shape_value(cellvalues, q_point, i)
-                
+
                 # Calculate which spatial component this DOF corresponds to
                 # For vector interpolation: DOF layout is [u1_x, u1_y, u1_z, u2_x, u2_y, u2_z, ...]
                 dofs_per_node = 3  # 3D problem
                 node_idx = div(i - 1, dofs_per_node) + 1
                 dof_component = mod(i - 1, dofs_per_node) + 1
-                
+
                 # Extract the scalar shape function value for this component
                 # The shape function vector has non-zero value only for the corresponding component
                 N_scalar = N_vec[dof_component]
-                
+
                 # Add body force contribution: ρ * b * N * dΩ
-                body_force_contribution = density * body_force_per_mass[dof_component] * N_scalar * dΩ
+                body_force_contribution =
+                    density * body_force_per_mass[dof_component] * N_scalar * dΩ
                 fe_body[i] += body_force_contribution
-                
+
                 # Track total applied force
                 total_force_applied[dof_component] += body_force_contribution
             end
         end
-        
+
         # Add element contributions to global load vector
         for (local_dof, global_dof) in enumerate(cell_dofs)
             f[global_dof] += fe_body[local_dof]
         end
     end
-    
+
     println("Applied volume force: $body_force_vector N/m³")
     println("Total force applied: $total_force_applied N")
     println("Total volume: $total_volume m³")
@@ -108,15 +109,24 @@ Parameters:
 Returns:
 - nothing (modifies f in-place)
 """
-function apply_gravity!(f, dh, cellvalues, density=1.0, g=9.81, direction=[0.0, 0.0, -1.0])
+function apply_gravity!(
+    f,
+    dh,
+    cellvalues,
+    density = 1.0,
+    g = 9.81,
+    direction = [0.0, 0.0, -1.0],
+)
     # Normalize direction vector
     unit_direction = direction ./ norm(direction)
-    
+
     # Calculate gravitational force per unit volume
     gravity_force = density * g .* unit_direction
-    
-    println("Applying gravity: g = $g m/s², direction = $unit_direction, density = $density kg/m³")
-    
+
+    println(
+        "Applying gravity: g = $g m/s², direction = $unit_direction, density = $density kg/m³",
+    )
+
     # Apply as volume force
     apply_volume_force!(f, dh, cellvalues, gravity_force, 1.0)  # density already included
 end
@@ -136,12 +146,14 @@ Parameters:
 Returns:
 - nothing (modifies f in-place)
 """
-function apply_acceleration!(f, dh, cellvalues, acceleration_vector, density=1.0)
+function apply_acceleration!(f, dh, cellvalues, acceleration_vector, density = 1.0)
     # Calculate inertial force per unit volume: F = ρ * a
     inertial_force = density .* acceleration_vector
-    
-    println("Applying acceleration: a = $acceleration_vector m/s², density = $density kg/m³")
-    
+
+    println(
+        "Applying acceleration: a = $acceleration_vector m/s², density = $density kg/m³",
+    )
+
     # Apply as volume force
     apply_volume_force!(f, dh, cellvalues, inertial_force, 1.0)  # density already included
 end
@@ -161,64 +173,71 @@ Parameters:
 Returns:
 - nothing (modifies f in-place)
 """
-function apply_variable_density_volume_force!(f, dh, cellvalues, body_force_vector, density_data)
+function apply_variable_density_volume_force!(
+    f,
+    dh,
+    cellvalues,
+    body_force_vector,
+    density_data,
+)
     # Number of basis functions per element
     n_basefuncs = getnbasefunctions(cellvalues)
-    
+
     # Element load vector for body forces
     fe_body = zeros(n_basefuncs)
-    
+
     # Track total applied force
     total_force_applied = zeros(3)
-    
+
     # Iterate over all cells
     for cell in CellIterator(dh)
         # Get cell ID and corresponding density
         cell_id = cellid(cell)
         density = density_data[cell_id]
-        
+
         # Skip if density is negligible (for SIMP optimization)
         if density < 1e-6
             continue
         end
-        
+
         # Reinitialize cell values
         reinit!(cellvalues, cell)
         fill!(fe_body, 0.0)
-        
+
         # Get cell DOFs
         cell_dofs = celldofs(cell)
-        
+
         # Integrate body force over element volume
-        for q_point in 1:getnquadpoints(cellvalues)
+        for q_point = 1:getnquadpoints(cellvalues)
             dΩ = getdetJdV(cellvalues, q_point)
-            
-            for i in 1:n_basefuncs
+
+            for i = 1:n_basefuncs
                 # Get vector shape function value
                 N_vec = shape_value(cellvalues, q_point, i)
-                
+
                 # Calculate DOF component
                 dofs_per_node = 3
                 dof_component = mod(i - 1, dofs_per_node) + 1
-                
+
                 # Extract scalar component
                 N_scalar = N_vec[dof_component]
-                
+
                 # Apply variable density body force
-                body_force_contribution = density * body_force_vector[dof_component] * N_scalar * dΩ
+                body_force_contribution =
+                    density * body_force_vector[dof_component] * N_scalar * dΩ
                 fe_body[i] += body_force_contribution
-                
+
                 # Track total force
                 total_force_applied[dof_component] += body_force_contribution
             end
         end
-        
+
         # Add to global load vector
         for (local_dof, global_dof) in enumerate(cell_dofs)
             f[global_dof] += fe_body[local_dof]
         end
     end
-    
+
     println("Applied variable density volume force")
     println("Total force applied: $total_force_applied N")
 end
