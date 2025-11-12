@@ -5,35 +5,37 @@ using TopOptEval.Utils
 
 # include("VolumeForces/testVolumeForces.jl")
 
+# INFO: Input data:
+# 1_Gridap_geom-Raw_SIMP.vtu      2_Gridap_geom_linear.vtu        3_Gridap_geom_SDF.vtu           4_Gridap_geom_level-set.vtu
+
 @testset "TopOptEval.jl" begin
     # Chapadlo test configuration flags
 
-    RUN_raw_chapadlo = true
-    RUN_lin_chapadlo = false
-    RUN_sdf_chapadlo = false
+    RUN_raw_gridap_geom = true
+    RUN_lin_gridap_geom = true
+    RUN_sdf_gridap_geom = true
+    RUN_level_gridap_geom = true
 
     # Raw results from SIMP method (density field) - chapadlo version
-    if RUN_raw_chapadlo
-        @testset "Raw_chapadlo" begin
+    if RUN_raw_gridap_geom
+        @testset "RUN_raw_gridap_geom" begin
             # Task configuration
-            taskName = "chapadlo_raw"
+            taskName = "Gridap_geom_raw"
 
             # 1. Import mesh
-            grid = import_mesh("chapadlo_TO_vfrac-0.3_results.vtu")
-            # grid = import_mesh("../data/chapadlo/chapadlo-input_data.vtu")
+            grid = import_mesh("../data/Gridap_geom/1_Gridap_geom-Raw_SIMP.vtu")
 
             # 2. Extract density data
-            density_data = extract_cell_density("chapadlo_TO_vfrac-0.3_results.vtu")
-            # density_data = extract_cell_density("../data/chapadlo/chapadlo-input_data.vtu")
+            density_data =
+                extract_cell_density("../data/Gridap_geom/1_Gridap_geom-Raw_SIMP.vtu")
             volume = Utils.calculate_volume(grid, density_data)
 
-            # 3. Setup material model (SIMP) - chapadlo parameters
-            # Material properties for Chapadlo
-            E0 = 2.4e3      # MPa = N/mm²
-            nu = 0.35       # Poisson's ratio
-            Emin = 1e-8     # Minimum Young's modulus
-            p = 1.0         # Penalization power
-            ρ = 1.04e-6     # kg/mm³
+            # 3. Setup material model (SIMP)
+            # Base properties
+            E0 = 1.0  # Base Young's modulus
+            nu = 0.3  # Poisson's ratio
+            Emin = 1e-8  # Minimum Young's modulus
+            p = 3.0  # Penalization power
 
             # Create SIMP material model
             material_model = create_simp_material_model(E0, nu, Emin, p)
@@ -51,81 +53,40 @@ using TopOptEval.Utils
                 density_data,
             )
 
-            # 6. Apply boundary conditions - chapadlo specific
-            # Fixed support - circle on face (vetknutí)
-            fixed_nodes = select_nodes_by_circle(
+            # 6. Apply boundary conditions
+            fixed_nodes =
+                select_nodes_by_plane(grid, [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], 0.01)
+            # force_nodes = select_nodes_by_plane(grid, [60.0, 0.0, 0.0], [-1.0, 0.0, 0.0])
+
+            force_nodes = select_nodes_by_circle(
                 grid,
-                [0.0, 75.0, 115.0],
-                [0.0, -1.0, 0.0],
-                16.11,
-                1e-3,
+                [2.0, 0.5, 0.5],  # center pointtrue
+                [-1.0, 0.0, 0.0],   # normal direction (perpendicular to the face)
+                0.1 + eps(),                # radius of 5mm
+                0.01,
             )
-
-            # Symmetry - YZ plane at x = 0
-            symmetry_nodes =
-                select_nodes_by_plane(grid, [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], 1e-3)
-
-            # Force application points
-            # Nožičky: plane at z = -90
-            nozicky_nodes =
-                select_nodes_by_plane(grid, [0.0, 0.0, -90.0], [0.0, 0.0, 1.0], 1.0)
-
-            # Kamera: circular region at z = 5
-            kamera_nodes =
-                select_nodes_by_circle(grid, [0.0, 0.0, 5.0], [0.0, 0.0, 1.0], 21.5, 1e-3)
-
             # Check if sets are correct:
-            all_force_nodes = union(nozicky_nodes, kamera_nodes)
-            all_constraint_nodes = union(fixed_nodes, symmetry_nodes)
             export_boundary_conditions(
                 grid,
                 dh,
-                all_constraint_nodes,
-                all_force_nodes,
+                fixed_nodes,
+                force_nodes,
                 "$(taskName)_boundary_conditions",
             )
-            # exit()
+
             # 7. Apply boundary conditions
-            # Fixed boundary condition (all DOFs)
             ch1 = apply_fixed_boundary!(K, f, dh, fixed_nodes)
 
-            # Symmetry boundary condition (X direction only)
-            ch2 = apply_sliding_boundary!(K, f, dh, symmetry_nodes, [1])
-
-            # Apply forces
-            # Nožičky: 13N downward force
-            apply_force!(f, dh, collect(nozicky_nodes), [0.0, 0.0, -13000.0]) # mN
-
-            # Kamera: 0.5N downward force
-            apply_force!(f, dh, collect(kamera_nodes), [0.0, 0.0, -500.0]) # mN
-
-            # Apply acceleration: 6 m/s² in Y direction
-            effective_densities = density_data .* ρ  # Kombinace SIMP hustoty a hustoty materiálu
-            acceleration_vector = [0.0, 6000.0, 0.0]  # m/s² = mm/s²
-
-            apply_variable_density_volume_force!(
-                f,
-                dh,
-                cellvalues,
-                acceleration_vector,
-                effective_densities,
-            )
+            # Apply 1N force in x direction to selected nodes
+            apply_force!(f, dh, collect(force_nodes), [0.0, 0.0, -1.0])
 
             # 8. Solve the system
-            u, energy, stress_field, max_von_mises, max_stress_cell = solve_system_simp(
-                K,
-                f,
-                dh,
-                cellvalues,
-                material_model,
-                density_data,
-                ch1,
-                ch2,
-            )
+            u, energy, stress_field, max_von_mises, max_stress_cell =
+                solve_system_simp(K, f, dh, cellvalues, material_model, density_data, ch1)
 
             # 9. Print deformation energy and maximum stress
             @info "Final deformation energy: $energy J"
-            @info "Deformation energy density: $(energy/(volume*10^(-9))) J/m^3"
+            @info "Defromation energy density: $(energy/(volume*10^(-9))) J/m^3"
             @info "Maximum von Mises stress: $max_von_mises at cell $max_stress_cell"
 
             # 10. Export results to ParaView
@@ -134,23 +95,18 @@ using TopOptEval.Utils
         end
     end
 
-    # Results from linear post-processing - chapadlo version
-    if RUN_lin_chapadlo
-        @testset "Linear_chapadlo" begin
+    # Results from "linear" post-processing (extracted surface tri mesh from raw results + TetGen for volume (tet) mesh)
+    if RUN_lin_gridap_geom
+        @testset "RUN_lin_gridap_geom" begin
             # Task configuration
+            taskName = "Gridap_geom_linear"
 
-            taskName = "chapadlo_linear"
-
-            # 1. Import mesh (tetrahedral mesh)
-            grid = import_mesh("Robot_gripper-tetgen.vtu")
-
+            # 1. Import mesh (vtu/msh)
+            grid = import_mesh("../data/Gridap_geom/2_Gridap_geom_linear.vtu")
             volume = calculate_volume(grid)
 
-            # 2. Setup material model - chapadlo parameters
-            E0 = 2.4e3      # MPa = N/mm²
-            nu = 0.35       # Poisson's ratio
-            ρ = 1.04e-6     # kg/mm³
-            λ, μ = create_material_model(E0, nu)
+            # 2. Setup material model (steel)
+            λ, μ = create_material_model(1.0, 0.3)
 
             # 3. Setup problem (initialize dof handler, cell values, matrices)
             dh, cellvalues, K, f = setup_problem(grid)
@@ -158,65 +114,41 @@ using TopOptEval.Utils
             # 4. Assemble stiffness matrix
             assemble_stiffness_matrix!(K, f, dh, cellvalues, λ, μ)
 
-            # 5. Apply boundary conditions - chapadlo specific
-            # Fixed support - circle on face (vetknutí)
-            fixed_nodes = select_nodes_by_circle(
+            # 5. Apply boundary conditions
+            fixed_nodes =
+                select_nodes_by_plane(grid, [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], 0.01)
+            # Force application on a circular region at x=2mm
+            force_nodes = select_nodes_by_circle(
                 grid,
-                [0.0, 75.0, 115.0],
-                [0.0, -1.0, 0.0],
-                16.11,
-                1e-3,
+                [2.0, 0.5, 0.5],  # center pointtrue
+                [-1.0, 0.0, 0.0], # normal direction (perpendicular to the face)
+                0.1 + eps(),      # radius of 0.1mm
+                0.01,
             )
 
-            # Symmetry - YZ plane at x = 0
-            symmetry_nodes =
-                select_nodes_by_plane(grid, [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], 1e-3)
-
-            # Force application points
-            # Nožičky: plane at z = -90
-            nozicky_nodes =
-                select_nodes_by_plane(grid, [0.0, 0.0, -90.0], [0.0, 0.0, 1.0], 1.0)
-
-            # Kamera: circular region at z = 5
-            kamera_nodes =
-                select_nodes_by_circle(grid, [0.0, 0.0, 5.0], [0.0, 0.0, 1.0], 21.5, 1e-3)
-
             # Check if sets are correct:
-            all_force_nodes = union(nozicky_nodes, kamera_nodes)
-            all_constraint_nodes = union(fixed_nodes, symmetry_nodes)
             export_boundary_conditions(
                 grid,
                 dh,
-                all_constraint_nodes,
-                all_force_nodes,
+                fixed_nodes,
+                force_nodes,
                 "$(taskName)_boundary_conditions",
             )
-
             # exit()
+
             # 6. Apply boundary conditions
-            # Fixed boundary condition (all DOFs)
             ch1 = apply_fixed_boundary!(K, f, dh, fixed_nodes)
 
-            # Symmetry boundary condition (X direction only)
-            ch2 = apply_sliding_boundary!(K, f, dh, symmetry_nodes, [1])
-
-            # Apply forces
-            # Nožičky: 13N downward force
-            apply_force!(f, dh, collect(nozicky_nodes), [0.0, 0.0, -13000.0]) # mN
-
-            # Kamera: 0.5N downward force
-            apply_force!(f, dh, collect(kamera_nodes), [0.0, 0.0, -500.0]) # mN
-
-            # Apply acceleration: 6 m/s² in Y direction
-            apply_acceleration!(f, dh, cellvalues, [0.0, 6000.0, 0.0], ρ)
+            # Apply 1N force in x direction to selected nodes
+            apply_force!(f, dh, collect(force_nodes), [0.0, 0.0, -1.0])
 
             # 7. Solve the system
             u, energy, stress_field, max_von_mises, max_stress_cell =
-                solve_system_adaptive(K, f, dh, cellvalues, λ, μ, ch1, ch2)
+                solve_system(K, f, dh, cellvalues, λ, μ, ch1)
 
             # 8. Print deformation energy and maximum stress
             @info "Final deformation energy: $energy J"
-            @info "Deformation energy density: $(energy/(volume*10^(-9))) J/m^3"
+            @info "Defromation energy density: $(energy/(volume*10^(-9))) J/m^3"
             @info "Maximum von Mises stress: $max_von_mises at cell $max_stress_cell"
 
             # 9. Export results to ParaView
@@ -225,95 +157,60 @@ using TopOptEval.Utils
         end
     end
 
-    # Results from SDF post-processing - chapadlo version
-    if RUN_sdf_chapadlo
-        @testset "SDF_chapadlo" begin
+    # Results from "sdf" post-processing (extracted surface tri mesh from raw results + TetGen for volume (tet) mesh)
+    if RUN_sdf_gridap_geom
+        @testset "RUN_sdf_gridap_geom" begin
             # Task configuration
-            taskName = "chapadlo_sdf"
+            taskName = "Gridap_geom_sdf"
 
-            # 1. Import mesh (tetrahedral mesh)
-            grid = import_mesh("tet_chapadlo_B-2.0_TriMesh-A15_cut.vtu")
-            volume = Utils.calculate_volume(grid)
+            # 1. Import mesh (vtu/msh)
+            grid = import_mesh("../data/Gridap_geom/3_Gridap_geom_SDF.vtu")
+            volume = calculate_volume(grid)
 
-            # 2. Setup material model - chapadlo parameters
-            E0 = 2.4e3      # MPa = N/mm²
-            nu = 0.35       # Poisson's ratio
-            ρ = 1.04e-6     # kg/mm³
-            λ, μ = create_material_model(E0, nu)
+            # 2. Setup material model (steel)
+            λ, μ = create_material_model(1.0, 0.3)
 
             # 3. Setup problem (initialize dof handler, cell values, matrices)
             dh, cellvalues, K, f = setup_problem(grid)
 
-            # 4. Apply boundary conditions - chapadlo specific
-            # Fixed support - circle on face (vetknutí)
-            fixed_nodes = select_nodes_by_circle(
+            # 4. Assemble stiffness matrix
+            assemble_stiffness_matrix!(K, f, dh, cellvalues, λ, μ)
+
+            # 5. Apply boundary conditions
+            fixed_nodes =
+                select_nodes_by_plane(grid, [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], 0.01)
+            # Force application on a circular region at x=2mm
+            force_nodes = select_nodes_by_circle(
                 grid,
-                [0.0, 75.0, 115.0],
-                [0.0, -1.0, 0.0],
-                16.11,
-                1e-3,
-            ) # ok
-
-            # Symmetry - YZ plane at x = 0
-            symmetry_nodes =
-                select_nodes_by_plane(grid, [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], 1e-3) # ok
-
-            # Force application points
-            # Nožičky: plane at z = -90
-            nozicky_nodes =
-                select_nodes_by_plane(grid, [0.0, 0.0, -90.0], [0.0, 0.0, 1.0], 1.0) # ok
-
-            # Kamera: circular region at z = 5
-            kamera_nodes =
-                select_nodes_by_circle(grid, [0.0, 0.0, 5.02], [0.0, 0.0, 1.0], 21.5, 1e-1) # ok
+                [2.0, 0.5, 0.5],  # center pointtrue
+                [-1.0, 0.0, 0.0], # normal direction (perpendicular to the face)
+                0.1 + eps(),      # radius of 0.1mm
+                0.01,
+            )
 
             # Check if sets are correct:
-            all_force_nodes = union(nozicky_nodes, kamera_nodes)
-            all_constraint_nodes = union(fixed_nodes, symmetry_nodes)
             export_boundary_conditions(
                 grid,
                 dh,
-                all_constraint_nodes,
-                all_force_nodes,
+                fixed_nodes,
+                force_nodes,
                 "$(taskName)_boundary_conditions",
             )
-
             # exit()
-            # 5. Assemble stiffness matrix
-            assemble_stiffness_matrix!(K, f, dh, cellvalues, λ, μ)
 
             # 6. Apply boundary conditions
-            # Fixed boundary condition (all DOFs)
             ch1 = apply_fixed_boundary!(K, f, dh, fixed_nodes)
 
-            # Symmetry boundary condition (X direction only)
-            ch2 = apply_sliding_boundary!(K, f, dh, symmetry_nodes, [1])
-
-            # Apply forces
-            # Nožičky: 13N downward force
-            apply_force!(f, dh, collect(nozicky_nodes), [0.0, 0.0, -13000.0]) # mN
-
-            # Kamera: 0.5N downward force
-            apply_force!(f, dh, collect(kamera_nodes), [0.0, 0.0, -500.0]) # mN
-
-            # Apply acceleration: 6 m/s² in Y direction
-            apply_acceleration!(f, dh, cellvalues, [0.0, 6000.0, 0.0], ρ)
+            # Apply 1N force in x direction to selected nodes
+            apply_force!(f, dh, collect(force_nodes), [0.0, 0.0, -1.0])
 
             # 7. Solve the system
-            config = SolverConfig(
-                method = :minres,
-                preconditioner = :diagonal,
-                tolerance = 1e-7,
-                max_iterations = 50000,
-                verbose = true,
-            )
-
             u, energy, stress_field, max_von_mises, max_stress_cell =
-                solve_system_robust(K, f, dh, cellvalues, λ, μ, ch1, ch2; config)
+                solve_system(K, f, dh, cellvalues, λ, μ, ch1)
 
             # 8. Print deformation energy and maximum stress
             @info "Final deformation energy: $energy J"
-            @info "Deformation energy density: $(energy/(volume*10^(-9))) J/m^3"
+            @info "Defromation energy density: $(energy/(volume*10^(-9))) J/m^3"
             @info "Maximum von Mises stress: $max_von_mises at cell $max_stress_cell"
 
             # 9. Export results to ParaView
@@ -321,4 +218,66 @@ using TopOptEval.Utils
             export_results(stress_field, dh, "$(taskName)_stress")
         end
     end
+
+    # Results from level-set (extracted surface tri mesh from raw results + TetGen for volume (tet) mesh)
+    if RUN_level_gridap_geom
+        @testset "RUN_level_gridap_geom" begin
+            # Task configuration
+            taskName = "Gridap_geom_level-set"
+
+            # 1. Import mesh (vtu/msh)
+            grid = import_mesh("../data/Gridap_geom/4_Gridap_geom_level-set.vtu")
+            volume = calculate_volume(grid)
+
+            # 2. Setup material model (steel)
+            λ, μ = create_material_model(1.0, 0.3)
+
+            # 3. Setup problem (initialize dof handler, cell values, matrices)
+            dh, cellvalues, K, f = setup_problem(grid)
+
+            # 4. Assemble stiffness matrix
+            assemble_stiffness_matrix!(K, f, dh, cellvalues, λ, μ)
+
+            # 5. Apply boundary conditions
+            fixed_nodes =
+                select_nodes_by_plane(grid, [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], 0.01)
+            # Force application on a circular region at x=2mm
+            force_nodes = select_nodes_by_circle(
+                grid,
+                [2.0, 0.5, 0.5],  # center pointtrue
+                [-1.0, 0.0, 0.0], # normal direction (perpendicular to the face)
+                0.1 + eps(),      # radius of 0.1mm
+                0.01,
+            )
+
+            # Check if sets are correct:
+            export_boundary_conditions(
+                grid,
+                dh,
+                fixed_nodes,
+                force_nodes,
+                "$(taskName)_boundary_conditions",
+            )
+
+            # 6. Apply boundary conditions
+            ch1 = apply_fixed_boundary!(K, f, dh, fixed_nodes)
+
+            # Apply 1N force in x direction to selected nodes
+            apply_force!(f, dh, collect(force_nodes), [0.0, 0.0, -1.0])
+
+            # 7. Solve the system
+            u, energy, stress_field, max_von_mises, max_stress_cell =
+                solve_system(K, f, dh, cellvalues, λ, μ, ch1)
+
+            # 8. Print deformation energy and maximum stress
+            @info "Final deformation energy: $energy J"
+            @info "Defromation energy density: $(energy/(volume*10^(-9))) J/m^3"
+            @info "Maximum von Mises stress: $max_von_mises at cell $max_stress_cell"
+
+            # 9. Export results to ParaView
+            export_results(u, dh, "$(taskName)_u")
+            export_results(stress_field, dh, "$(taskName)_stress")
+        end
+    end
+
 end
