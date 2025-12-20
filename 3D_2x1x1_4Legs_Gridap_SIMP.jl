@@ -1,12 +1,17 @@
 # =============================================================================
-# SIMP MESH ANALYSIS - GRIDAP (SIMPLE VERSION)
+# SIMP MESH ANALYSIS - GRIDAP (VERSION 3 - FIXED BC TAGGING)
 # =============================================================================
 #
-# Analyzes SIMP topology optimization results using Gridap.jl
-# Inspired by GridapTopOpt's SmoothErsatzMaterialInterpolation approach.
+# KEY FIXES:
+# 1. Properly tag boundary FACES (not vertices) for Neumann BC
+# 2. Use face vertex coordinates to identify force region (not just centroids)
+# 3. Create separate BoundaryTriangulation for Neumann BC using face mask
+# 4. Inspired by GridapTopOpt.jl boundary condition approach
 #
-# Key principle: Material properties are CellFields that vary with density,
-# composed into the weak form via Gridap's field composition operator (∘).
+# The previous version failed because:
+# - Face centroids may not be exactly at x=XMAX due to mesh geometry
+# - Traction function returning zero outside region results in zero force
+# - Need to use GenericBoundaryTriangulation with face mask
 #
 # =============================================================================
 
@@ -29,31 +34,26 @@ using WriteVTK
 # CONFIGURATION
 # =============================================================================
 
-# Paths
 INPUT_FILE = "data/3D_2x1x1_4Legs/1_3D_2x1x1_4Legs_SIMP.vtu"
 OUTPUT_DIR = "results/SIMP_gridap_standalone"
 
-# Geometry
+# Geometry parameters
 const XMAX = 2.0
 const YMAX = 1.0
 const ZMAX = 1.0
 const FIX_SIZE = 0.3
 const LOAD_RADIUS = 0.1
 
-# Material
+# Material properties
 const E0 = 1.0
 const NU = 0.3
 const E_MIN = 1e-9
 const P_SIMP = 3.0
 
-# Lamé parameters for solid material
-const LAMBDA = E0 * NU / ((1 + NU) * (1 - 2 * NU))
-const MU = E0 / (2 * (1 + NU))
-
 # Loading
 const FORCE_TOTAL = -1.0
 
-# Tolerance
+# Tolerance for geometric comparisons
 const TOL = 0.01
 
 # =============================================================================
@@ -69,10 +69,17 @@ print_error(msg) = printstyled("✗  $msg\n", color = :red)
 # GEOMETRIC PREDICATES
 # =============================================================================
 
+"""
+Check if a vertex coordinate is in the fixed corner region (Dirichlet BC).
+Fixed corners are at x=0 plane, in the four corners of the YZ cross-section.
+"""
 function is_on_fixed_corner(coord)
     x, y, z = coord[1], coord[2], coord[3]
+
+    # Must be on the x=0 plane
     abs(x) > TOL && return false
 
+    # Check if in any of the four corners
     c1 = (y <= FIX_SIZE + TOL) && (z <= FIX_SIZE + TOL)
     c2 = (y >= YMAX - FIX_SIZE - TOL) && (z <= FIX_SIZE + TOL)
     c3 = (y <= FIX_SIZE + TOL) && (z >= ZMAX - FIX_SIZE - TOL)
@@ -81,67 +88,113 @@ function is_on_fixed_corner(coord)
     return c1 || c2 || c3 || c4
 end
 
-function is_on_force_region(coord)
-    x, y, z = coord[1], coord[2], coord[3]
-    abs(x - XMAX) > TOL && return false
+"""
+Check if a boundary face is in the force region.
+A face is considered in the force region if:
+1. ALL vertices are on the x=XMAX plane (within tolerance)
+2. The face centroid is within the circular load region
 
+This is more robust than just checking centroid coordinates.
+"""
+function is_face_in_force_region(face_vertex_coords)
+    # First check: ALL vertices must be on x=XMAX plane
+    for v in face_vertex_coords
+        if abs(v[1] - XMAX) > TOL
+            return false
+        end
+    end
+
+    # Compute centroid for circle check
+    centroid = sum(face_vertex_coords) / length(face_vertex_coords)
+
+    # Check if centroid is in the circular region
     y_c, z_c = YMAX / 2, ZMAX / 2
-    dist_sq = (y - y_c)^2 + (z - z_c)^2
+    dist_sq = (centroid[2] - y_c)^2 + (centroid[3] - z_c)^2
     return dist_sq <= (LOAD_RADIUS + TOL)^2
 end
 
-# =============================================================================
-# SIMP MATERIAL INTERPOLATION (GridapTopOpt style)
-# =============================================================================
-
 """
-SIMP interpolation function: I(ρ) = E_min + (E_0 - E_min) * ρ^p
-
-This is analogous to GridapTopOpt's ersatz interpolation:
-    I(φ) = ε + (1-ε) * H_η(φ)
-
-but for density-based (SIMP) rather than level-set based optimization.
+Check if a face is on the x=XMAX plane (for fallback).
 """
+function is_face_on_xmax(face_vertex_coords)
+    for v in face_vertex_coords
+        if abs(v[1] - XMAX) > TOL
+            return false
+        end
+    end
+    return true
+end
+
+# =============================================================================
+# SIMP MATERIAL INTERPOLATION
+# =============================================================================
+
 function simp_interp(ρ)
     return E_MIN + (E0 - E_MIN) * ρ^P_SIMP
 end
 
 # =============================================================================
-# VTU IMPORT
+# VTU IMPORT WITH PROPER BOUNDARY TAGGING
 # =============================================================================
 
-# =============================================================================
-# VTU IMPORT - FIXED VERSION
-# =============================================================================
 function import_simp_mesh(filepath::String)
     print_info("Importing mesh: $filepath")
     vtk = VTKFile(filepath)
 
-    # Points
+    # =========================================================================
+    # Extract points (nodes)
+    # =========================================================================
     pts = get_points(vtk)
     n_nodes = size(pts, 2)
     node_coords = [Point(pts[1, i], pts[2, i], pts[3, i]) for i = 1:n_nodes]
     print_info("  Nodes: $n_nodes")
 
-    # Cells
+    # Debug: check node coordinate ranges
+    x_coords = [c[1] for c in node_coords]
+    y_coords = [c[2] for c in node_coords]
+    z_coords = [c[3] for c in node_coords]
+    print_info("  X range: [$(minimum(x_coords)), $(maximum(x_coords))]")
+    print_info("  Y range: [$(minimum(y_coords)), $(maximum(y_coords))]")
+    print_info("  Z range: [$(minimum(z_coords)), $(maximum(z_coords))]")
+
+    # =========================================================================
+    # Extract hexahedral cells
+    # =========================================================================
     vtk_cells = get_cells(vtk)
     conn = vtk_cells.connectivity
     offs = vtk_cells.offsets
     types = vtk_cells.types
     n_cells = length(types)
 
-    # Compute start indices for each cell
     start_indices = vcat(1, offs[1:(end-1)] .+ 1)
 
-    # Extract hex cells (VTK type 12)
-    # NOTE: ReadVTK returns 1-based connectivity in Julia - NO +1 needed!
     hex_cells = Vector{Vector{Int}}()
     hex_idx = Int[]
+
+    # CRITICAL FIX: VTK hexahedron node ordering → Gridap lexicographic ordering
+    # VTK HEX:    [0,1,2,3,4,5,6,7] = [(0,0,0), (1,0,0), (1,1,0), (0,1,0), (0,0,1), (1,0,1), (1,1,1), (0,1,1)]
+    # Gridap HEX: [0,1,2,3,4,5,6,7] = [(0,0,0), (1,0,0), (0,1,0), (1,1,0), (0,0,1), (1,0,1), (0,1,1), (1,1,1)]
+    # Permutation (1-based): [1,2,4,3,5,6,8,7]
+    vtk_to_gridap_hex = (1, 2, 4, 3, 5, 6, 8, 7)
 
     for i = 1:n_cells
         if types[i] == 12  # VTK_HEXAHEDRON
             conn_indices = start_indices[i]:offs[i]
-            cell_nodes = collect(conn[conn_indices])  # Already 1-based!
+            cell_nodes = collect(conn[conn_indices])
+
+            # Validate we have 8 nodes
+            if length(cell_nodes) != 8
+                error("Cell $i is marked as HEX but has $(length(cell_nodes)) nodes")
+            end
+
+            # CRITICAL FIX: Convert 0-based → 1-based indexing if needed
+            if minimum(cell_nodes) == 0
+                cell_nodes .+= 1
+            end
+
+            # CRITICAL FIX: Reorder VTK node ordering → Gridap ordering
+            cell_nodes = cell_nodes[collect(vtk_to_gridap_hex)]
+
             push!(hex_cells, cell_nodes)
             push!(hex_idx, i)
         end
@@ -154,17 +207,18 @@ function import_simp_mesh(filepath::String)
         error("No hexahedral cells found!")
     end
 
-    # Validate connectivity indices (helpful for debugging)
+    # Validate connectivity
     all_indices = vcat(hex_cells...)
     min_idx, max_idx = extrema(all_indices)
-    print_info("  Node index range in connectivity: [$min_idx, $max_idx]")
-
     if max_idx > n_nodes || min_idx < 1
-        print_error("  Invalid connectivity: indices must be in [1, $n_nodes]")
-        error("Mesh connectivity references non-existent nodes")
+        error(
+            "Mesh connectivity references non-existent nodes: min=$min_idx, max=$max_idx, n_nodes=$n_nodes",
+        )
     end
 
-    # Density field from cell data
+    # =========================================================================
+    # Extract density field from cell data
+    # =========================================================================
     cell_data = get_cell_data(vtk)
     density_values = nothing
 
@@ -187,7 +241,21 @@ function import_simp_mesh(filepath::String)
 
     print_info("  Density range: [$(minimum(density_values)), $(maximum(density_values))]")
 
-    # Find fixed vertices
+    # =========================================================================
+    # Create Gridap grid and model
+    # =========================================================================
+    cell_node_ids = Gridap.Arrays.Table(hex_cells)
+    reffe = LagrangianRefFE(Float64, HEX, 1)
+    cell_types = fill(1, n_hex)
+
+    grid = UnstructuredGrid(node_coords, cell_node_ids, [reffe], cell_types)
+
+    # Create model with automatic boundary detection
+    model = UnstructuredDiscreteModel(grid)
+
+    # =========================================================================
+    # Identify fixed vertices (Dirichlet BC)
+    # =========================================================================
     fixed_vids = Int[]
     for (i, coord) in enumerate(node_coords)
         if is_on_fixed_corner(coord)
@@ -196,76 +264,188 @@ function import_simp_mesh(filepath::String)
     end
     print_info("  Fixed vertices: $(length(fixed_vids))")
 
-    # Create Gridap model
-    cell_node_ids = Gridap.Arrays.Table(hex_cells)
-    reffe = LagrangianRefFE(Float64, HEX, 1)
-    cell_types = fill(1, n_hex)
-
-    grid = UnstructuredGrid(node_coords, cell_node_ids, [reffe], cell_types)
-    model = UnstructuredDiscreteModel(grid)
-
-    # Add "fixed" tag
+    # =========================================================================
+    # Tag vertices for Dirichlet BC
+    # =========================================================================
     labels = get_face_labeling(model)
-    v2e = get_face_entity(labels, 0)
-    max_ent = maximum(v2e)
-    fixed_ent = max_ent + 1
+    v2e = get_face_entity(labels, 0)  # 0-dim = vertices
+    max_ent_v = maximum(v2e)
+    fixed_ent = max_ent_v + 1
 
     for vid in fixed_vids
         v2e[vid] = fixed_ent
     end
     add_tag!(labels, "fixed", [fixed_ent])
 
-    print_success("  Model created")
-    return model, density_values, fixed_vids
+    # =========================================================================
+    # Verify boundary detection
+    # =========================================================================
+    Γ_test = BoundaryTriangulation(model)
+    n_boundary_faces = num_cells(Γ_test)
+    print_info("  Boundary faces detected: $n_boundary_faces")
+
+    if n_boundary_faces == 0
+        print_error("  No boundary faces detected! Model construction failed.")
+        error("Boundary detection failed")
+    end
+
+    # =========================================================================
+    # DIAGNOSTICS: Check boundary face coordinates
+    # =========================================================================
+    face_coords = get_cell_coordinates(Γ_test)
+
+    # Check vertex X coordinates on boundary faces
+    xmins = [minimum(v[1] for v in fc) for fc in face_coords]
+    xmaxs = [maximum(v[1] for v in fc) for fc in face_coords]
+
+    print_info("  Boundary vertex X range: [$(minimum(xmins)), $(maximum(xmaxs))]")
+
+    faces_max_near_xmax = count(abs.(xmaxs .- XMAX) .<= TOL)
+    faces_all_at_xmax =
+        count((abs.(xmins .- XMAX) .<= TOL) .& (abs.(xmaxs .- XMAX) .<= TOL))
+
+    print_info("  Faces with max X ≈ XMAX: $faces_max_near_xmax")
+    print_info("  Faces with ALL vertices at X ≈ XMAX: $faces_all_at_xmax")
+
+    if faces_all_at_xmax == 0
+        print_warning("  No boundary faces found at x=XMAX! Check mesh orientation.")
+    end
+
+    print_success("  Model created with automatic boundary detection")
+
+    return model, density_values, fixed_vids, node_coords
 end
 
 # =============================================================================
-# MAIN ANALYSIS
+# CREATE NEUMANN BOUNDARY MASK
+# =============================================================================
+
+"""
+Create a mask identifying which boundary faces are in the force region.
+Returns a Vector{Bool} with length equal to number of boundary faces.
+"""
+function create_neumann_mask(model)
+    Γ_all = BoundaryTriangulation(model)
+    face_coords_all = get_cell_coordinates(Γ_all)
+
+    n_boundary = num_cells(Γ_all)
+    force_mask = Vector{Bool}(undef, n_boundary)
+
+    force_count = 0
+    xmax_count = 0
+
+    for (i, face_coords) in enumerate(face_coords_all)
+        # Check if face is in force region
+        in_force = is_face_in_force_region(face_coords)
+        force_mask[i] = in_force
+
+        if in_force
+            force_count += 1
+        end
+
+        # Also count faces on x=XMAX for debugging
+        if is_face_on_xmax(face_coords)
+            xmax_count += 1
+        end
+    end
+
+    print_info("  Faces on x=XMAX plane: $xmax_count")
+    print_info("  Faces in force region (circle): $force_count")
+
+    if force_count == 0 && xmax_count > 0
+        print_warning("  No faces in circular region, but $xmax_count on x=XMAX")
+        print_warning("  Circle center: ($(YMAX/2), $(ZMAX/2)), radius: $LOAD_RADIUS")
+
+        # Show some face centroids for debugging
+        count_shown = 0
+        for (i, face_coords) in enumerate(face_coords_all)
+            if is_face_on_xmax(face_coords) && count_shown < 5
+                centroid = sum(face_coords) / length(face_coords)
+                y_c, z_c = YMAX / 2, ZMAX / 2
+                dist = sqrt((centroid[2] - y_c)^2 + (centroid[3] - z_c)^2)
+                print_info(
+                    "    Face $i: centroid = $centroid, dist from center = $(round(dist, digits=4))",
+                )
+                count_shown += 1
+            end
+        end
+    end
+
+    return force_mask, xmax_count
+end
+
+# =============================================================================
+# MAIN ANALYSIS (FIXED VERSION)
 # =============================================================================
 
 function analyze_simp_gridap()
     println()
     println("="^70)
-    println("SIMP MESH ANALYSIS - GRIDAP")
+    println("SIMP MESH ANALYSIS - GRIDAP (V3 - FIXED BC TAGGING)")
     println("="^70)
     println()
 
     mkpath(OUTPUT_DIR)
 
-    # 1. Import mesh
-    model, ρ_values, fixed_vids = import_simp_mesh(INPUT_FILE)
+    # =========================================================================
+    # 1. Import mesh with density data
+    # =========================================================================
+    model, ρ_values, fixed_vids, node_coords = import_simp_mesh(INPUT_FILE)
 
     n_cells = num_cells(model)
     n_nodes = num_nodes(model)
 
-    # 2. Triangulation and density CellField
-    Ω = Triangulation(model)
-    Γ = BoundaryTriangulation(model)
+    # =========================================================================
+    # 2. Create Neumann boundary mask
+    # =========================================================================
+    force_mask, xmax_count = create_neumann_mask(model)
+    n_force_faces = sum(force_mask)
 
-    # Create density as CellField (element-wise constant)
+    # =========================================================================
+    # 3. Create triangulations
+    # =========================================================================
+    Ω = Triangulation(model)
+
+    # Full boundary triangulation (for reference)
+    Γ_all = BoundaryTriangulation(model)
+    n_boundary = num_cells(Γ_all)
+
+    # Neumann boundary triangulation using mask
+    if n_force_faces > 0
+        # Use GenericBoundaryTriangulation with the mask
+        Γ_N = GenericBoundaryTriangulation(model, force_mask)
+        print_success("Using $n_force_faces faces in circular force region")
+    elseif xmax_count > 0
+        # Fallback: use all faces on x=XMAX plane
+        print_warning("Fallback: using all $xmax_count faces on x=XMAX plane")
+
+        face_coords_all = get_cell_coordinates(Γ_all)
+        xmax_mask = [is_face_on_xmax(fc) for fc in face_coords_all]
+        Γ_N = GenericBoundaryTriangulation(model, xmax_mask)
+    else
+        error("No suitable boundary found for Neumann BC!")
+    end
+
+    n_neumann_faces = num_cells(Γ_N)
+    print_info("Neumann boundary: $n_neumann_faces faces")
+
+    # =========================================================================
+    # 4. Density CellField and SIMP interpolation
+    # =========================================================================
     ρ_h = CellField(ρ_values, Ω)
 
-    # 3. SIMP material interpolation (GridapTopOpt style)
-    # 
-    # In GridapTopOpt they use:
-    #   a(u,v,φ) = ∫((I ∘ φ)*(C ⊙ ε(u) ⊙ ε(v)))dΩ
-    #
-    # For SIMP we use:
-    #   a(u,v) = ∫((I ∘ ρ_h)*(C ⊙ ε(u) ⊙ ε(v)))dΩ
-    #
-    # where I(ρ) = E_min + (E_0 - E_min) * ρ^p
+    I = simp_interp
+    E_eff = I ∘ ρ_h
 
-    # Effective modulus as CellField via composition
-    I = simp_interp  # The interpolation function
-    E_eff = I ∘ ρ_h  # Composed with density field
-
-    # Lamé parameters as CellFields (proportional to E_eff)
-    λ_h = (NU / ((1 + NU) * (1 - 2*NU))) * E_eff
+    # Lamé parameters as CellFields
+    λ_h = (NU / ((1 + NU) * (1 - 2 * NU))) * E_eff
     μ_h = (1 / (2 * (1 + NU))) * E_eff
 
     print_info("SIMP interpolation: E(ρ) = $E_MIN + ($E0 - $E_MIN) * ρ^$P_SIMP")
 
-    # 4. FE Spaces
+    # =========================================================================
+    # 5. FE Spaces
+    # =========================================================================
     order = 1
     reffe = ReferenceFE(lagrangian, VectorValue{3,Float64}, order)
 
@@ -278,85 +458,106 @@ function analyze_simp_gridap()
     print_info("DOFs: $n_free free, $n_dir Dirichlet")
 
     if n_dir == 0
-        print_error("No Dirichlet DOFs - system singular!")
+        print_error("No Dirichlet DOFs - system will be singular!")
         error("BC application failed")
     end
 
-    # 5. Measures
+    # =========================================================================
+    # 6. Measures
+    # =========================================================================
     degree = 2 * order
     dΩ = Measure(Ω, degree)
-    dΓ = Measure(Γ, degree)
+    dΓ_N = Measure(Γ_N, degree)
 
-    # 6. Constitutive law with SIMP interpolation
-    # 
-    # σ(ε) = λ(ρ)*tr(ε)*I + 2*μ(ρ)*ε
-    #
-    # Using CellField arithmetic, this becomes spatially varying
+    # =========================================================================
+    # 7. Compute actual Neumann boundary area for traction calculation
+    # =========================================================================
+    neumann_area = sum(∫(1.0) * dΓ_N)
+    print_info("Neumann boundary area: $(round(neumann_area, digits=6))")
 
-    # I3 = one(SymTensorValue{3,Float64})
-    # σ_simp(ε_val) = λ_h * tr(ε_val) * I3 + 2 * μ_h * ε_val
+    # Calculate traction magnitude (uniform over Neumann boundary)
+    # FORCE_TOTAL is the total force, traction = force / area
+    traction_mag = FORCE_TOTAL / neumann_area
+    print_info(
+        "Traction magnitude: $(round(traction_mag, digits=4)) (uniform, in Z direction)",
+    )
 
-    # 7. Weak form
+    # =========================================================================
+    # 8. Weak form
+    # =========================================================================
+
     # Bilinear form with density-dependent material
-    # a(u, v) = ∫(ε(v) ⊙ (σ_simp ∘ ε(u))) * dΩ
     a(u, v) = ∫(λ_h * (tr(ε(u)) * tr(ε(v))) + 2 * μ_h * (ε(v) ⊙ ε(u))) * dΩ
 
+    # Linear form - uniform traction on Neumann boundary
+    # Traction vector: (0, 0, traction_mag) - force in Z direction (negative for downward)
+    t_N = VectorValue(0.0, 0.0, traction_mag)
 
-    # Linear form (traction)
-    force_area = π * LOAD_RADIUS^2
-    traction_mag = FORCE_TOTAL / force_area
+    l(v) = ∫(v ⋅ t_N) * dΓ_N
 
-    function traction_field(x)
-        if is_on_force_region(x)
-            return VectorValue(0.0, 0.0, traction_mag)
-        else
-            return VectorValue(0.0, 0.0, 0.0)
-        end
-    end
-
-    l(v) = ∫(v ⋅ traction_field) * dΓ
-
-    # 8. Solve
-    print_info("Solving...")
+    # =========================================================================
+    # 9. Assemble and solve
+    # =========================================================================
+    print_info("Assembling and solving...")
 
     op = AffineFEOperator(a, l, U, V)
     uh = solve(op)
 
-    # 9. Post-processing
+    # =========================================================================
+    # 10. Post-processing
+    # =========================================================================
     u_vals = get_free_dof_values(uh)
     max_u = maximum(abs.(u_vals))
-    print_info("Max displacement: $max_u")
+    min_u = minimum(u_vals)
 
-    # Strain energy: U = 0.5 * ∫ ε : σ dΩ
-    # energy = 0.5 * sum(∫(ε(uh) ⊙ (σ_simp ∘ ε(uh))) * dΩ)
+    print_info("Displacement range: [$min_u, $max_u]")
+
+    if max_u < 1e-15
+        print_error("Zero displacement detected!")
+        print_error(
+            "Check: 1) Boundary conditions, 2) Force application, 3) Material properties",
+        )
+    end
+
+    # Strain energy
     energy = 0.5 * sum(∫(λ_h * (tr(ε(uh)) * tr(ε(uh))) + 2 * μ_h * (ε(uh) ⊙ ε(uh))) * dΩ)
 
-    # Compliance: C = 2U (for homogeneous Dirichlet BC)
+    # Compliance (= 2 * strain energy = work done by external forces)
     compliance = 2.0 * energy
+
+    # Also compute compliance as work: C = ∫ t · u dΓ
+    work = sum(∫(uh ⋅ t_N) * dΓ_N)
 
     # Volume
     vol_total = sum(∫(1.0) * dΩ)
     vol_material = sum(∫(ρ_h) * dΩ)
     vol_frac = vol_material / vol_total
 
-    # 10. Results
+    # =========================================================================
+    # 11. Print results
+    # =========================================================================
     println()
     println("="^70)
     println("RESULTS")
     println("="^70)
-    print_success("Compliance:     $compliance")
-    print_success("Strain energy:  $energy")
-    print_success("Volume fraction: $(round(vol_frac*100, digits=2))%")
-    print_success("Max displacement: $max_u")
+    print_success("Compliance (2*energy):  $compliance")
+    print_success("Compliance (work):      $work")
+    print_success("Strain energy:          $energy")
+    print_success("Volume fraction:        $(round(vol_frac*100, digits=2))%")
+    print_success("Max displacement:       $max_u")
     println()
     print_info("Mesh: $n_cells cells, $n_nodes nodes")
     print_info("Fixed vertices: $(length(fixed_vids)), Dirichlet DOFs: $n_dir")
+    print_info(
+        "Neumann boundary: $n_neumann_faces faces, area: $(round(neumann_area, digits=6))",
+    )
     println()
 
-    # 11. Export results
-    export_path = joinpath(OUTPUT_DIR, "simp_results")
+    # =========================================================================
+    # 12. Export results
+    # =========================================================================
+    export_path = joinpath(OUTPUT_DIR, "simp_results_v3")
 
-    # Simple VTU export using Gridap's writevtk
     writevtk(
         Ω,
         export_path,
@@ -367,9 +568,11 @@ function analyze_simp_gridap()
 
     return (
         compliance = compliance,
+        work = work,
         energy = energy,
         vol_fraction = vol_frac,
         max_displacement = max_u,
+        neumann_area = neumann_area,
     )
 end
 
@@ -377,6 +580,4 @@ end
 # RUN
 # =============================================================================
 
-# if abspath(PROGRAM_FILE) == @__FILE__
 analyze_simp_gridap()
-# end
