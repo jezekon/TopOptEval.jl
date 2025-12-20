@@ -1,5 +1,5 @@
 # =============================================================================
-# 3D BEAM COMPLIANCE EVALUATION SCRIPT - GRIDAP VERSION
+# 3D BEAM COMPLIANCE EVALUATION SCRIPT - GRIDAP VERSION (with BC Export)
 # =============================================================================
 #
 # Description:
@@ -9,6 +9,7 @@
 #   This version uses:
 #   - TopOptEval.jl for SIMP meshes (variable density)
 #   - Gridap.jl for solid tetrahedral meshes (verification)
+#   - Boundary conditions export for both solvers
 #
 # Input Files:
 #   1. 1_3D_2x1x1_4Legs_SIMP.vtu          - Raw SIMP hexahedral mesh with density
@@ -45,7 +46,7 @@ using Gridap.Io  # For VTK export
 # ReadVTK for mesh import (shared by both approaches)
 using ReadVTK
 
-# WriteVTK for manual VTU export (used for stress cell data)
+# WriteVTK for manual VTU export (used for stress cell data and BC export)
 using WriteVTK
 
 # =============================================================================
@@ -154,14 +155,12 @@ function vtu_to_gridap_model(filepath::String)
     println("    Found $(length(tet_cells)) tetrahedral cells, $n_nodes nodes")
 
     # Create Gridap Grid using the low-level constructor
-    # Convert cell connectivity to the format Gridap expects
     cell_node_ids = Gridap.Arrays.Table(tet_cells)
 
     # Reference finite element for tetrahedra (linear, order 1)
-    # Must use LagrangianRefFE, not just TET polytope
     reffe = LagrangianRefFE(Float64, TET, 1)
     reffes = [reffe]
-    cell_types = fill(1, length(tet_cells))  # All cells are type 1 (TET)
+    cell_types = fill(1, length(tet_cells))
 
     # Create the unstructured grid
     grid = UnstructuredGrid(node_coords, cell_node_ids, reffes, cell_types)
@@ -226,23 +225,148 @@ function is_on_force_region(x)
     return dist_sq <= (LOAD_RADIUS + tol)^2
 end
 
+# =============================================================================
+# BOUNDARY CONDITIONS EXPORT FOR GRIDAP
+# =============================================================================
+
+"""
+    export_gridap_boundary_conditions(model, output_path::String)
+
+Exports boundary conditions for a Gridap model to VTU file for ParaView visualization.
+
+Exports boundary faces (triangles for tet mesh) with cell data:
+- boundary_type = 0: No boundary condition
+- boundary_type = 1: Fixed (Dirichlet) boundary condition  
+- boundary_type = 2: Force (Neumann) boundary condition
+
+Parameters:
+- model: Gridap UnstructuredDiscreteModel
+- output_path: Output file path (without extension)
+
+Returns:
+- NamedTuple with statistics (n_fixed, n_force, n_faces)
+"""
+function export_gridap_boundary_conditions(model, output_path::String)
+    print_info("Exporting Gridap boundary conditions to VTU...")
+
+    # =========================================================================
+    # 1. Get boundary triangulation from Gridap model
+    # =========================================================================
+    Γ = BoundaryTriangulation(model)
+
+    # Get coordinates of each boundary face
+    # Returns LazyArray of arrays, each containing vertex coordinates for one face
+    cell_coords = get_cell_coordinates(Γ)
+    n_faces = length(cell_coords)
+
+    print_info("  Found $n_faces boundary faces")
+
+    # =========================================================================
+    # 2. Build boundary mesh for WriteVTK export
+    # =========================================================================
+    # Collect unique nodes from boundary faces and build connectivity
+    node_list = Vector{NTuple{3,Float64}}()
+    face_connectivity = Vector{Vector{Int}}()
+
+    for face_coords in cell_coords
+        face_node_ids = Int[]
+
+        for coord in face_coords
+            # Round coordinates for consistent hashing (avoid floating point issues)
+            key = (
+                round(coord[1], digits = 10),
+                round(coord[2], digits = 10),
+                round(coord[3], digits = 10),
+            )
+
+            # Find existing node or create new one
+            node_id = findfirst(n -> n == key, node_list)
+            if node_id === nothing
+                push!(node_list, key)
+                node_id = length(node_list)
+            end
+            push!(face_node_ids, node_id)
+        end
+
+        push!(face_connectivity, face_node_ids)
+    end
+
+    n_nodes = length(node_list)
+    print_info("  Boundary mesh: $n_nodes nodes, $n_faces faces")
+
+    # =========================================================================
+    # 3. Compute BC type for each face based on centroid position
+    # =========================================================================
+    bc_types = zeros(Int, n_faces)
+
+    for (i, face_coords) in enumerate(cell_coords)
+        # Compute face centroid (average of vertex positions)
+        centroid = sum(face_coords) / length(face_coords)
+
+        # Evaluate geometric predicates
+        if is_on_fixed_corner(centroid)
+            bc_types[i] = 1  # Fixed BC
+        elseif is_on_force_region(centroid)
+            bc_types[i] = 2  # Force BC
+        else
+            bc_types[i] = 0  # No BC
+        end
+    end
+
+    # Statistics
+    n_fixed = count(==(1), bc_types)
+    n_force = count(==(2), bc_types)
+
+    print_info("  Fixed BC faces: $n_fixed")
+    print_info("  Force BC faces: $n_force")
+
+    # =========================================================================
+    # 4. Convert to WriteVTK format and export
+    # =========================================================================
+    # Node coordinates as 3 × n_nodes matrix
+    points = zeros(Float64, 3, n_nodes)
+    for (i, node) in enumerate(node_list)
+        points[1, i] = node[1]
+        points[2, i] = node[2]
+        points[3, i] = node[3]
+    end
+
+    # Create VTK cells (triangles for boundary of tet mesh)
+    vtk_cells = WriteVTK.MeshCell[]
+    for face_nodes in face_connectivity
+        n_verts = length(face_nodes)
+        if n_verts == 3
+            push!(
+                vtk_cells,
+                WriteVTK.MeshCell(WriteVTK.VTKCellTypes.VTK_TRIANGLE, face_nodes),
+            )
+        elseif n_verts == 4
+            push!(vtk_cells, WriteVTK.MeshCell(WriteVTK.VTKCellTypes.VTK_QUAD, face_nodes))
+        else
+            @warn "Unexpected boundary face with $n_verts vertices"
+        end
+    end
+
+    # Write VTU file with BC markers as cell data
+    vtk_grid(output_path, points, vtk_cells) do vtk
+        vtk["boundary_type", WriteVTK.VTKCellData()] = bc_types
+    end
+
+    print_success("Boundary conditions exported to $(output_path).vtu")
+
+    return (n_fixed = n_fixed, n_force = n_force, n_faces = n_faces)
+end
+
+# =============================================================================
+# GRIDAP RESULTS EXPORT FUNCTIONS
+# =============================================================================
+
 """
     compute_von_mises_stress(σ::SymTensorValue{3,Float64})
 
 Computes von Mises equivalent stress from a 3D symmetric stress tensor.
-
-Formula: σ_vm = √(3/2 * dev(σ) : dev(σ))
-       = √(σ_xx² + σ_yy² + σ_zz² - σ_xx*σ_yy - σ_yy*σ_zz - σ_zz*σ_xx + 3*(σ_xy² + σ_yz² + σ_xz²))
-
-Parameters:
-- σ: Symmetric stress tensor (SymTensorValue{3,Float64})
-
-Returns:
-- Von Mises stress (scalar)
 """
 function compute_von_mises_stress(σ::SymTensorValue{3,Float64})
-    # Extract stress components
-    # SymTensorValue stores: [σ_11, σ_21, σ_31, σ_22, σ_32, σ_33] (column-major lower triangle)
     σ_xx = σ[1, 1]
     σ_yy = σ[2, 2]
     σ_zz = σ[3, 3]
@@ -250,7 +374,6 @@ function compute_von_mises_stress(σ::SymTensorValue{3,Float64})
     σ_yz = σ[2, 3]
     σ_xz = σ[1, 3]
 
-    # Von Mises formula
     vm = sqrt(
         σ_xx^2 + σ_yy^2 + σ_zz^2 - σ_xx * σ_yy - σ_yy * σ_zz - σ_zz * σ_xx +
         3 * (σ_xy^2 + σ_yz^2 + σ_xz^2),
@@ -264,19 +387,10 @@ end
 
 Exports Gridap FEM results to VTU file for visualization in ParaView.
 Exports displacement as nodal data (fast).
-
-Parameters:
-- Ω: Triangulation (mesh)
-- uh: Displacement field (FE function)
-- σ_field: Stress tensor field (unused - kept for API compatibility)
-- output_path: Output file path (without extension)
 """
 function export_gridap_results(Ω, uh, σ_field, output_path::String)
     print_info("Exporting Gridap displacement to VTU: $(output_path).vtu")
-
-    # Export displacement - this is fast (direct nodal interpolation)
     writevtk(Ω, output_path, cellfields = ["displacement" => uh])
-
     print_success("Displacement exported to $(output_path).vtu")
 end
 
@@ -285,19 +399,6 @@ end
 
 Exports full Gridap FEM results including cell-averaged stress to VTU file.
 Uses L2 projection to DG0 space for robust stress computation.
-
-Parameters:
-- model: DiscreteModel
-- Ω: Triangulation (mesh)
-- dΩ: Measure for integration
-- uh: Displacement field (FE function)  
-- σ_elastic: Constitutive function (strain -> stress)
-- output_path: Output file path (without extension)
-
-Exports:
-- displacement: Nodal displacement vector field
-- von_mises_stress: Cell-averaged von Mises stress
-- stress_xx/yy/zz/xy/yz/xz: Cell-averaged stress components
 """
 function export_gridap_full_results(model, Ω, dΩ, uh, σ_elastic, output_path::String)
     print_info("Exporting Gridap results with stress to VTU...")
@@ -331,21 +432,14 @@ function export_gridap_full_results(model, Ω, dΩ, uh, σ_elastic, output_path:
     end
 
     # =========================================================================
-    # 2. Extract nodal displacement using DOF values directly
+    # 2. Extract nodal displacement
     # =========================================================================
     print_info("  Extracting nodal displacements...")
-
-    # Get the FE space to understand DOF layout
-    V = get_fe_space(uh)
-
-    # For vector Lagrangian P1 elements, each node has 3 DOFs
-    # We need to extract values at nodes from the solution vector
 
     disp_x = zeros(n_nodes)
     disp_y = zeros(n_nodes)
     disp_z = zeros(n_nodes)
 
-    # Safe evaluation with error handling
     for (node_id, coord) in enumerate(node_coords)
         try
             u_val = uh(coord)
@@ -353,7 +447,6 @@ function export_gridap_full_results(model, Ω, dΩ, uh, σ_elastic, output_path:
             disp_y[node_id] = u_val[2]
             disp_z[node_id] = u_val[3]
         catch e
-            # Node might be exactly on boundary - use zero or interpolate
             disp_x[node_id] = 0.0
             disp_y[node_id] = 0.0
             disp_z[node_id] = 0.0
@@ -365,45 +458,32 @@ function export_gridap_full_results(model, Ω, dΩ, uh, σ_elastic, output_path:
     # =========================================================================
     print_info("  Computing cell-averaged stresses via L2 projection...")
 
-    # Create DG0 (piecewise constant) FE space for scalar stress components
-    reffe_dg0 = ReferenceFE(lagrangian, Float64, 0)  # Order 0 = constant per cell
+    reffe_dg0 = ReferenceFE(lagrangian, Float64, 0)
     V_dg0 = TestFESpace(model, reffe_dg0, conformity = :L2)
     U_dg0 = TrialFESpace(V_dg0)
 
-    # Stress field
     σ = σ_elastic ∘ ε(uh)
 
-    # Define projection bilinear form (same for all components)
-    # For DG0, this simplifies to cell averages: ∫ u * v dΩ
     a_proj(u, v) = ∫(u * v) * dΩ
 
-    # Extract stress component basis vectors
     e1 = VectorValue(1.0, 0.0, 0.0)
     e2 = VectorValue(0.0, 1.0, 0.0)
     e3 = VectorValue(0.0, 0.0, 1.0)
 
-    # Helper function to project a scalar field to DG0
     function project_to_dg0(field_expr)
         l(v) = ∫(field_expr * v) * dΩ
         op = AffineFEOperator(a_proj, l, U_dg0, V_dg0)
         return solve(op)
     end
 
-    # Project each stress component to DG0
-    print_info("    Projecting σ_xx...")
+    print_info("    Projecting stress components...")
     σxx_h = project_to_dg0((e1 ⋅ σ) ⋅ e1)
-    print_info("    Projecting σ_yy...")
     σyy_h = project_to_dg0((e2 ⋅ σ) ⋅ e2)
-    print_info("    Projecting σ_zz...")
     σzz_h = project_to_dg0((e3 ⋅ σ) ⋅ e3)
-    print_info("    Projecting σ_xy...")
     σxy_h = project_to_dg0((e1 ⋅ σ) ⋅ e2)
-    print_info("    Projecting σ_yz...")
     σyz_h = project_to_dg0((e2 ⋅ σ) ⋅ e3)
-    print_info("    Projecting σ_xz...")
     σxz_h = project_to_dg0((e1 ⋅ σ) ⋅ e3)
 
-    # Extract DOF values (one per cell for DG0)
     cell_σ_xx = get_free_dof_values(σxx_h)
     cell_σ_yy = get_free_dof_values(σyy_h)
     cell_σ_zz = get_free_dof_values(σzz_h)
@@ -431,10 +511,7 @@ function export_gridap_full_results(model, Ω, dΩ, uh, σ_elastic, output_path:
     print_info("  Writing VTU file...")
 
     vtk_grid(output_path, points, vtk_cells) do vtk
-        # Point data (nodal values)
         vtk["displacement", WriteVTK.VTKPointData()] = (disp_x, disp_y, disp_z)
-
-        # Cell data (element-averaged values)
         vtk["von_mises_stress", WriteVTK.VTKCellData()] = cell_vm
         vtk["stress_xx", WriteVTK.VTKCellData()] = collect(cell_σ_xx)
         vtk["stress_yy", WriteVTK.VTKCellData()] = collect(cell_σ_yy)
@@ -449,12 +526,15 @@ function export_gridap_full_results(model, Ω, dΩ, uh, σ_elastic, output_path:
     return max_vm, max_vm_cell
 end
 
+# =============================================================================
+# ANALYSIS FUNCTIONS
+# =============================================================================
+
 """
     analyze_solid_mesh_gridap(filepath::String, taskname::String)
 
 Analyzes a solid tetrahedral mesh using Gridap.jl for FEM computation.
-
-This provides an independent verification of the TopOptEval.jl results.
+Includes boundary condition export for visualization.
 
 Parameters:
 - filepath: Path to the VTU file
@@ -474,30 +554,30 @@ function analyze_solid_mesh_gridap(filepath::String, taskname::String)
     print_info("Importing mesh from: $filepath")
     model = vtu_to_gridap_model(filepath)
 
-    # Get mesh statistics
     n_cells = num_cells(model)
     n_nodes = num_nodes(model)
     print_info("Mesh: $n_cells tetrahedra, $n_nodes nodes")
 
     # =========================================================================
-    # 2. Define reference finite element and triangulations
+    # 2. Export boundary conditions for visualization
+    # =========================================================================
+    bc_output_path = joinpath(RESULTS_DIR, "$(taskname)_boundary_conditions")
+    bc_stats = export_gridap_boundary_conditions(model, bc_output_path)
+
+    # =========================================================================
+    # 3. Define reference finite element and triangulations
     # =========================================================================
     print_info("Setting up FE spaces...")
 
-    # Linear Lagrange elements for 3D elasticity (vector field)
     order = 1
     reffe = ReferenceFE(lagrangian, VectorValue{3,Float64}, order)
 
-    # Volume and boundary triangulations
     Ω = Triangulation(model)
-    Γ = BoundaryTriangulation(model)  # All boundary faces
+    Γ = BoundaryTriangulation(model)
 
     # =========================================================================
-    # 3. Create FE spaces with Dirichlet BC on fixed corners
+    # 4. Create FE spaces with Dirichlet BC on fixed corners
     # =========================================================================
-    # Test space with Dirichlet mask on fixed corners
-    # The mask is a tuple of 3 functions (one per component) that return true
-    # where that component should be constrained
     V = TestFESpace(
         model,
         reffe,
@@ -505,7 +585,6 @@ function analyze_solid_mesh_gridap(filepath::String, taskname::String)
         dirichlet_masks = [(is_on_fixed_corner, is_on_fixed_corner, is_on_fixed_corner)],
     )
 
-    # Trial space with zero displacement on fixed corners
     g = VectorValue(0.0, 0.0, 0.0)
     U = TrialFESpace(V, g)
 
@@ -513,40 +592,30 @@ function analyze_solid_mesh_gridap(filepath::String, taskname::String)
     print_info("DOFs: $n_dofs (free)")
 
     # =========================================================================
-    # 4. Define measures for integration
+    # 5. Define measures for integration
     # =========================================================================
     degree = 2 * order
     dΩ = Measure(Ω, degree)
     dΓ = Measure(Γ, degree)
 
     # =========================================================================
-    # 5. Define constitutive law (linear elasticity)
+    # 6. Define constitutive law (linear elasticity)
     # =========================================================================
-    # Stress tensor: σ = λ tr(ε) I + 2μ ε
-    # Using local copies to avoid closure issues with global constants
     λ = LAMBDA
     μ = MU
-
-    # Identity tensor for 3D symmetric tensors (must be defined as constant, not from CellField)
     I3 = one(SymTensorValue{3,Float64})
-
-    # Constitutive relation using pre-defined identity tensor
     σ_elastic(ε) = λ * tr(ε) * I3 + 2 * μ * ε
 
     # =========================================================================
-    # 6. Define weak form
+    # 7. Define weak form
     # =========================================================================
     print_info("Defining weak form...")
 
-    # Bilinear form: a(u,v) = ∫ ε(v) : σ(ε(u)) dΩ
     a(u, v) = ∫(ε(v) ⊙ σ_elastic(ε(u))) * dΩ
 
-    # Compute traction magnitude
-    # Total force distributed over the circular region
     force_area = π * LOAD_RADIUS^2
     traction_magnitude = FORCE_TOTAL / force_area
 
-    # Traction function: applies traction only in the force region
     function traction_field(x)
         if is_on_force_region(x)
             return VectorValue(0.0, 0.0, traction_magnitude)
@@ -555,11 +624,10 @@ function analyze_solid_mesh_gridap(filepath::String, taskname::String)
         end
     end
 
-    # Linear form: l(v) = ∫ v · t dΓ
     l(v) = ∫(v ⋅ traction_field) * dΓ
 
     # =========================================================================
-    # 7. Assemble and solve
+    # 8. Assemble and solve
     # =========================================================================
     print_info("Assembling and solving system...")
 
@@ -567,34 +635,21 @@ function analyze_solid_mesh_gridap(filepath::String, taskname::String)
     uh = solve(op)
 
     # =========================================================================
-    # 8. Post-processing: compute compliance and energy
+    # 9. Post-processing: compute compliance and energy
     # =========================================================================
     print_info("Computing compliance and deformation energy...")
 
-    # Deformation energy: U = 0.5 * ∫ ε(u) : σ(ε(u)) dΩ
     energy = 0.5 * sum(∫(ε(uh) ⊙ σ_elastic(ε(uh))) * dΩ)
-
-    # For linear elasticity: Compliance C = f^T * u = 2 * U
-    # Using this relation avoids numerical issues with traction field integration
     compliance = 2.0 * energy
-
-    # Compute volume
     volume = sum(∫(1.0) * dΩ)
 
     # =========================================================================
-    # 9. Compute stress field for export and max von Mises
+    # 10. Compute stress field and export results
     # =========================================================================
     print_info("Computing stress field...")
-
-    # Stress field as a CellField: σ = σ_elastic(ε(u))
     σ_field = σ_elastic ∘ ε(uh)
 
-    # =========================================================================
-    # 10. Export results to VTU with full stress data
-    # =========================================================================
     output_path = joinpath(RESULTS_DIR, "$(taskname)_gridap_results")
-
-    # Use the full export function that includes cell-averaged stress
     max_von_mises, max_stress_cell =
         export_gridap_full_results(model, Ω, dΩ, uh, σ_elastic, output_path)
 
@@ -606,7 +661,9 @@ function analyze_solid_mesh_gridap(filepath::String, taskname::String)
     print_data("  Deformation energy: $energy J")
     print_data("  Volume: $volume")
     print_data("  Max von Mises stress: $max_von_mises at cell $max_stress_cell")
+    print_data("  BC export: $(bc_stats.n_fixed) fixed, $(bc_stats.n_force) force faces")
     print_data("  Results exported to: $(output_path).vtu")
+    print_data("  BC exported to: $(bc_output_path).vtu")
 
     return (
         name = taskname,
@@ -619,11 +676,12 @@ function analyze_solid_mesh_gridap(filepath::String, taskname::String)
         n_nodes = n_nodes,
         n_dofs = n_dofs,
         solver = "Gridap",
+        bc_stats = bc_stats,
     )
 end
 
 # =============================================================================
-# TOPOPTEVAL FUNCTIONS (for SIMP mesh - unchanged from original)
+# TOPOPTEVAL FUNCTIONS (for SIMP mesh)
 # =============================================================================
 
 """
@@ -736,7 +794,7 @@ function analyze_simp_mesh(filepath::String, taskname::String)
     print_info("Fixed corner nodes: $(length(fixed_nodes))")
     print_info("Force nodes (circular): $(length(force_nodes))")
 
-    # Export boundary conditions
+    # Export boundary conditions (TopOptEval version)
     export_boundary_conditions(
         grid,
         dh,
