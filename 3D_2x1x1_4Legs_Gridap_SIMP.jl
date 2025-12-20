@@ -375,7 +375,62 @@ function create_neumann_mask(model)
 end
 
 # =============================================================================
-# MAIN ANALYSIS (FIXED VERSION)
+# TAG NEUMANN BOUNDARY FACES
+# =============================================================================
+
+"""
+Tag boundary faces in the force region for Neumann BC.
+Returns vector of face IDs and count.
+"""
+function tag_neumann_boundary!(model)
+    # Get boundary triangulation to iterate over faces
+    Γ_all = BoundaryTriangulation(model)
+    face_coords_all = get_cell_coordinates(Γ_all)
+
+    n_boundary = num_cells(Γ_all)
+
+    force_count = 0
+    xmax_count = 0
+
+    neumann_faces = Int[]
+
+    for (local_id, face_coords) in enumerate(face_coords_all)
+        # Check if face is in force region
+        in_force = is_face_in_force_region(face_coords)
+
+        if in_force
+            push!(neumann_faces, local_id)
+            force_count += 1
+        end
+
+        # Also count faces on x=XMAX for debugging
+        if is_face_on_xmax(face_coords)
+            xmax_count += 1
+        end
+    end
+
+    print_info("  Faces on x=XMAX plane: $xmax_count")
+    print_info("  Faces in force region (circle): $force_count")
+
+    if force_count == 0 && xmax_count > 0
+        print_warning("  No faces in circular region, but $xmax_count on x=XMAX")
+        print_warning("  Using all x=XMAX faces as fallback")
+
+        # Fallback: use all x=XMAX faces
+        empty!(neumann_faces)
+        for (local_id, face_coords) in enumerate(face_coords_all)
+            if is_face_on_xmax(face_coords)
+                push!(neumann_faces, local_id)
+            end
+        end
+        return neumann_faces, xmax_count
+    end
+
+    return neumann_faces, force_count
+end
+
+# =============================================================================
+# MAIN ANALYSIS (FIXED VERSION WITH FILTERED MEASURE)
 # =============================================================================
 
 function analyze_simp_gridap()
@@ -396,41 +451,33 @@ function analyze_simp_gridap()
     n_nodes = num_nodes(model)
 
     # =========================================================================
-    # 2. Create Neumann boundary mask
+    # 2. Tag Neumann boundary faces
     # =========================================================================
-    force_mask, xmax_count = create_neumann_mask(model)
-    n_force_faces = sum(force_mask)
+    neumann_face_ids, n_neumann = tag_neumann_boundary!(model)
+
+    if n_neumann == 0
+        error("No suitable boundary found for Neumann BC!")
+    end
 
     # =========================================================================
     # 3. Create triangulations
     # =========================================================================
     Ω = Triangulation(model)
-
-    # Full boundary triangulation (for reference)
     Γ_all = BoundaryTriangulation(model)
     n_boundary = num_cells(Γ_all)
 
-    # Neumann boundary triangulation using mask
-    if n_force_faces > 0
-        # Use GenericBoundaryTriangulation with the mask
-        Γ_N = GenericBoundaryTriangulation(model, force_mask)
-        print_success("Using $n_force_faces faces in circular force region")
-    elseif xmax_count > 0
-        # Fallback: use all faces on x=XMAX plane
-        print_warning("Fallback: using all $xmax_count faces on x=XMAX plane")
-
-        face_coords_all = get_cell_coordinates(Γ_all)
-        xmax_mask = [is_face_on_xmax(fc) for fc in face_coords_all]
-        Γ_N = GenericBoundaryTriangulation(model, xmax_mask)
-    else
-        error("No suitable boundary found for Neumann BC!")
-    end
-
-    n_neumann_faces = num_cells(Γ_N)
-    print_info("Neumann boundary: $n_neumann_faces faces")
+    print_info("Boundary triangulation: $n_boundary faces total")
+    print_info("Neumann boundary: $n_neumann faces")
 
     # =========================================================================
-    # 4. Density CellField and SIMP interpolation
+    # 4. Create characteristic function for Neumann faces
+    # =========================================================================
+    # χ_N = 1 on Neumann faces, 0 elsewhere
+    χ_neumann = [i in neumann_face_ids ? 1.0 : 0.0 for i = 1:n_boundary]
+    χ_N = CellField(χ_neumann, Γ_all)
+
+    # =========================================================================
+    # 5. Density CellField and SIMP interpolation
     # =========================================================================
     ρ_h = CellField(ρ_values, Ω)
 
@@ -444,7 +491,7 @@ function analyze_simp_gridap()
     print_info("SIMP interpolation: E(ρ) = $E_MIN + ($E0 - $E_MIN) * ρ^$P_SIMP")
 
     # =========================================================================
-    # 5. FE Spaces
+    # 6. FE Spaces
     # =========================================================================
     order = 1
     reffe = ReferenceFE(lagrangian, VectorValue{3,Float64}, order)
@@ -463,40 +510,45 @@ function analyze_simp_gridap()
     end
 
     # =========================================================================
-    # 6. Measures
+    # 7. Measures
     # =========================================================================
     degree = 2 * order
     dΩ = Measure(Ω, degree)
-    dΓ_N = Measure(Γ_N, degree)
+    dΓ_all = Measure(Γ_all, degree)
 
     # =========================================================================
-    # 7. Compute actual Neumann boundary area for traction calculation
+    # 8. Compute Neumann boundary area using filtered measure
     # =========================================================================
-    neumann_area = sum(∫(1.0) * dΓ_N)
+    neumann_area = sum(∫(χ_N) * dΓ_all)
     print_info("Neumann boundary area: $(round(neumann_area, digits=6))")
 
+    if neumann_area < 1e-12
+        print_error("Neumann boundary area is zero! Check face tagging.")
+        error("Invalid Neumann boundary")
+    end
+
     # Calculate traction magnitude (uniform over Neumann boundary)
-    # FORCE_TOTAL is the total force, traction = force / area
     traction_mag = FORCE_TOTAL / neumann_area
     print_info(
         "Traction magnitude: $(round(traction_mag, digits=4)) (uniform, in Z direction)",
     )
 
     # =========================================================================
-    # 8. Weak form
+    # 9. Weak form with filtered boundary measure
     # =========================================================================
 
     # Bilinear form with density-dependent material
     a(u, v) = ∫(λ_h * (tr(ε(u)) * tr(ε(v))) + 2 * μ_h * (ε(v) ⊙ ε(u))) * dΩ
 
-    # Linear form - uniform traction on Neumann boundary
-    # Traction vector: (0, 0, traction_mag) - force in Z direction (negative for downward)
+    # Linear form - traction on Neumann boundary (filtered by χ_N)
+    # Traction vector: (0, 0, traction_mag) - force in Z direction
     t_N = VectorValue(0.0, 0.0, traction_mag)
 
-    l(v) = ∫(v ⋅ t_N) * dΓ_N
+    # KEY: Multiply integrand by χ_N to restrict to Neumann faces
+    l(v) = ∫(χ_N * (v ⋅ t_N)) * dΓ_all
 
     # =========================================================================
-    # 9. Assemble and solve
+    # 10. Assemble and solve
     # =========================================================================
     print_info("Assembling and solving...")
 
@@ -504,7 +556,7 @@ function analyze_simp_gridap()
     uh = solve(op)
 
     # =========================================================================
-    # 10. Post-processing
+    # 11. Post-processing
     # =========================================================================
     u_vals = get_free_dof_values(uh)
     max_u = maximum(abs.(u_vals))
@@ -525,8 +577,8 @@ function analyze_simp_gridap()
     # Compliance (= 2 * strain energy = work done by external forces)
     compliance = 2.0 * energy
 
-    # Also compute compliance as work: C = ∫ t · u dΓ
-    work = sum(∫(uh ⋅ t_N) * dΓ_N)
+    # Also compute compliance as work: C = ∫ t · u dΓ (filtered)
+    work = sum(∫(χ_N * (uh ⋅ t_N)) * dΓ_all)
 
     # Volume
     vol_total = sum(∫(1.0) * dΩ)
@@ -534,7 +586,7 @@ function analyze_simp_gridap()
     vol_frac = vol_material / vol_total
 
     # =========================================================================
-    # 11. Print results
+    # 12. Print results
     # =========================================================================
     println()
     println("="^70)
@@ -548,13 +600,11 @@ function analyze_simp_gridap()
     println()
     print_info("Mesh: $n_cells cells, $n_nodes nodes")
     print_info("Fixed vertices: $(length(fixed_vids)), Dirichlet DOFs: $n_dir")
-    print_info(
-        "Neumann boundary: $n_neumann_faces faces, area: $(round(neumann_area, digits=6))",
-    )
+    print_info("Neumann boundary: $n_neumann faces, area: $(round(neumann_area, digits=6))")
     println()
 
     # =========================================================================
-    # 12. Export results
+    # 13. Export results
     # =========================================================================
     export_path = joinpath(OUTPUT_DIR, "simp_results_v3")
 
@@ -575,6 +625,7 @@ function analyze_simp_gridap()
         neumann_area = neumann_area,
     )
 end
+
 
 # =============================================================================
 # RUN
