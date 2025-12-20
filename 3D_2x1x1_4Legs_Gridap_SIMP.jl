@@ -293,12 +293,14 @@ function analyze_simp_gridap()
     #
     # Using CellField arithmetic, this becomes spatially varying
 
-    I3 = one(SymTensorValue{3,Float64})
-    σ_simp(ε_val) = λ_h * tr(ε_val) * I3 + 2 * μ_h * ε_val
+    # I3 = one(SymTensorValue{3,Float64})
+    # σ_simp(ε_val) = λ_h * tr(ε_val) * I3 + 2 * μ_h * ε_val
 
     # 7. Weak form
     # Bilinear form with density-dependent material
-    a(u, v) = ∫(ε(v) ⊙ (σ_simp ∘ ε(u))) * dΩ
+    # a(u, v) = ∫(ε(v) ⊙ (σ_simp ∘ ε(u))) * dΩ
+    a(u, v) = ∫(λ_h * (tr(ε(u)) * tr(ε(v))) + 2 * μ_h * (ε(v) ⊙ ε(u))) * dΩ
+
 
     # Linear form (traction)
     force_area = π * LOAD_RADIUS^2
@@ -326,7 +328,8 @@ function analyze_simp_gridap()
     print_info("Max displacement: $max_u")
 
     # Strain energy: U = 0.5 * ∫ ε : σ dΩ
-    energy = 0.5 * sum(∫(ε(uh) ⊙ (σ_simp ∘ ε(uh))) * dΩ)
+    # energy = 0.5 * sum(∫(ε(uh) ⊙ (σ_simp ∘ ε(uh))) * dΩ)
+    energy = 0.5 * sum(∫(λ_h * (tr(ε(uh)) * tr(ε(uh))) + 2 * μ_h * (ε(uh) ⊙ ε(uh))) * dΩ)
 
     # Compliance: C = 2U (for homogeneous Dirichlet BC)
     compliance = 2.0 * energy
