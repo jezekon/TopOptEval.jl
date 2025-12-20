@@ -40,9 +40,13 @@ using Gridap.ReferenceFEs
 using Gridap.FESpaces
 using Gridap.CellData
 using Gridap.TensorValues
+using Gridap.Io  # For VTK export
 
 # ReadVTK for mesh import (shared by both approaches)
 using ReadVTK
+
+# WriteVTK for manual VTU export (used for stress cell data)
+using WriteVTK
 
 # =============================================================================
 # CONFIGURATION
@@ -223,6 +227,229 @@ function is_on_force_region(x)
 end
 
 """
+    compute_von_mises_stress(σ::SymTensorValue{3,Float64})
+
+Computes von Mises equivalent stress from a 3D symmetric stress tensor.
+
+Formula: σ_vm = √(3/2 * dev(σ) : dev(σ))
+       = √(σ_xx² + σ_yy² + σ_zz² - σ_xx*σ_yy - σ_yy*σ_zz - σ_zz*σ_xx + 3*(σ_xy² + σ_yz² + σ_xz²))
+
+Parameters:
+- σ: Symmetric stress tensor (SymTensorValue{3,Float64})
+
+Returns:
+- Von Mises stress (scalar)
+"""
+function compute_von_mises_stress(σ::SymTensorValue{3,Float64})
+    # Extract stress components
+    # SymTensorValue stores: [σ_11, σ_21, σ_31, σ_22, σ_32, σ_33] (column-major lower triangle)
+    σ_xx = σ[1, 1]
+    σ_yy = σ[2, 2]
+    σ_zz = σ[3, 3]
+    σ_xy = σ[1, 2]
+    σ_yz = σ[2, 3]
+    σ_xz = σ[1, 3]
+
+    # Von Mises formula
+    vm = sqrt(
+        σ_xx^2 + σ_yy^2 + σ_zz^2 - σ_xx * σ_yy - σ_yy * σ_zz - σ_zz * σ_xx +
+        3 * (σ_xy^2 + σ_yz^2 + σ_xz^2),
+    )
+
+    return vm
+end
+
+"""
+    export_gridap_results(Ω, uh, σ_field, output_path::String)
+
+Exports Gridap FEM results to VTU file for visualization in ParaView.
+Exports displacement as nodal data (fast).
+
+Parameters:
+- Ω: Triangulation (mesh)
+- uh: Displacement field (FE function)
+- σ_field: Stress tensor field (unused - kept for API compatibility)
+- output_path: Output file path (without extension)
+"""
+function export_gridap_results(Ω, uh, σ_field, output_path::String)
+    print_info("Exporting Gridap displacement to VTU: $(output_path).vtu")
+
+    # Export displacement - this is fast (direct nodal interpolation)
+    writevtk(Ω, output_path, cellfields = ["displacement" => uh])
+
+    print_success("Displacement exported to $(output_path).vtu")
+end
+
+"""
+    export_gridap_full_results(model, Ω, dΩ, uh, σ_elastic, output_path::String)
+
+Exports full Gridap FEM results including cell-averaged stress to VTU file.
+Uses L2 projection to DG0 space for robust stress computation.
+
+Parameters:
+- model: DiscreteModel
+- Ω: Triangulation (mesh)
+- dΩ: Measure for integration
+- uh: Displacement field (FE function)  
+- σ_elastic: Constitutive function (strain -> stress)
+- output_path: Output file path (without extension)
+
+Exports:
+- displacement: Nodal displacement vector field
+- von_mises_stress: Cell-averaged von Mises stress
+- stress_xx/yy/zz/xy/yz/xz: Cell-averaged stress components
+"""
+function export_gridap_full_results(model, Ω, dΩ, uh, σ_elastic, output_path::String)
+    print_info("Exporting Gridap results with stress to VTU...")
+
+    # =========================================================================
+    # 1. Extract mesh geometry for WriteVTK
+    # =========================================================================
+    grid = get_grid(model)
+    n_cells = num_cells(model)
+    n_nodes = num_nodes(model)
+
+    print_info("  Mesh: $n_cells cells, $n_nodes nodes")
+
+    # Node coordinates -> 3 x n_nodes matrix
+    node_coords = get_node_coordinates(grid)
+    points = zeros(Float64, 3, n_nodes)
+    for (i, coord) in enumerate(node_coords)
+        points[1, i] = coord[1]
+        points[2, i] = coord[2]
+        points[3, i] = coord[3]
+    end
+
+    # Cell connectivity -> VTK cells
+    cell_node_ids = get_cell_node_ids(grid)
+    vtk_cells = WriteVTK.MeshCell[]
+    for cell_nodes in cell_node_ids
+        push!(
+            vtk_cells,
+            WriteVTK.MeshCell(WriteVTK.VTKCellTypes.VTK_TETRA, collect(cell_nodes)),
+        )
+    end
+
+    # =========================================================================
+    # 2. Extract nodal displacement using DOF values directly
+    # =========================================================================
+    print_info("  Extracting nodal displacements...")
+
+    # Get the FE space to understand DOF layout
+    V = get_fe_space(uh)
+
+    # For vector Lagrangian P1 elements, each node has 3 DOFs
+    # We need to extract values at nodes from the solution vector
+
+    disp_x = zeros(n_nodes)
+    disp_y = zeros(n_nodes)
+    disp_z = zeros(n_nodes)
+
+    # Safe evaluation with error handling
+    for (node_id, coord) in enumerate(node_coords)
+        try
+            u_val = uh(coord)
+            disp_x[node_id] = u_val[1]
+            disp_y[node_id] = u_val[2]
+            disp_z[node_id] = u_val[3]
+        catch e
+            # Node might be exactly on boundary - use zero or interpolate
+            disp_x[node_id] = 0.0
+            disp_y[node_id] = 0.0
+            disp_z[node_id] = 0.0
+        end
+    end
+
+    # =========================================================================
+    # 3. Compute cell-averaged stress using L2 projection to DG0 space
+    # =========================================================================
+    print_info("  Computing cell-averaged stresses via L2 projection...")
+
+    # Create DG0 (piecewise constant) FE space for scalar stress components
+    reffe_dg0 = ReferenceFE(lagrangian, Float64, 0)  # Order 0 = constant per cell
+    V_dg0 = TestFESpace(model, reffe_dg0, conformity = :L2)
+    U_dg0 = TrialFESpace(V_dg0)
+
+    # Stress field
+    σ = σ_elastic ∘ ε(uh)
+
+    # Define projection bilinear form (same for all components)
+    # For DG0, this simplifies to cell averages: ∫ u * v dΩ
+    a_proj(u, v) = ∫(u * v) * dΩ
+
+    # Extract stress component basis vectors
+    e1 = VectorValue(1.0, 0.0, 0.0)
+    e2 = VectorValue(0.0, 1.0, 0.0)
+    e3 = VectorValue(0.0, 0.0, 1.0)
+
+    # Helper function to project a scalar field to DG0
+    function project_to_dg0(field_expr)
+        l(v) = ∫(field_expr * v) * dΩ
+        op = AffineFEOperator(a_proj, l, U_dg0, V_dg0)
+        return solve(op)
+    end
+
+    # Project each stress component to DG0
+    print_info("    Projecting σ_xx...")
+    σxx_h = project_to_dg0((e1 ⋅ σ) ⋅ e1)
+    print_info("    Projecting σ_yy...")
+    σyy_h = project_to_dg0((e2 ⋅ σ) ⋅ e2)
+    print_info("    Projecting σ_zz...")
+    σzz_h = project_to_dg0((e3 ⋅ σ) ⋅ e3)
+    print_info("    Projecting σ_xy...")
+    σxy_h = project_to_dg0((e1 ⋅ σ) ⋅ e2)
+    print_info("    Projecting σ_yz...")
+    σyz_h = project_to_dg0((e2 ⋅ σ) ⋅ e3)
+    print_info("    Projecting σ_xz...")
+    σxz_h = project_to_dg0((e1 ⋅ σ) ⋅ e3)
+
+    # Extract DOF values (one per cell for DG0)
+    cell_σ_xx = get_free_dof_values(σxx_h)
+    cell_σ_yy = get_free_dof_values(σyy_h)
+    cell_σ_zz = get_free_dof_values(σzz_h)
+    cell_σ_xy = get_free_dof_values(σxy_h)
+    cell_σ_yz = get_free_dof_values(σyz_h)
+    cell_σ_xz = get_free_dof_values(σxz_h)
+
+    # Compute von Mises from cell-averaged components
+    cell_vm = zeros(n_cells)
+    for i = 1:n_cells
+        σxx, σyy, σzz = cell_σ_xx[i], cell_σ_yy[i], cell_σ_zz[i]
+        σxy, σyz, σxz = cell_σ_xy[i], cell_σ_yz[i], cell_σ_xz[i]
+        cell_vm[i] = sqrt(
+            σxx^2 + σyy^2 + σzz^2 - σxx*σyy - σyy*σzz - σzz*σxx + 3*(σxy^2 + σyz^2 + σxz^2),
+        )
+    end
+
+    max_vm = maximum(cell_vm)
+    max_vm_cell = argmax(cell_vm)
+    print_info("  Max von Mises stress: $max_vm at cell $max_vm_cell")
+
+    # =========================================================================
+    # 4. Write VTU file with WriteVTK
+    # =========================================================================
+    print_info("  Writing VTU file...")
+
+    vtk_grid(output_path, points, vtk_cells) do vtk
+        # Point data (nodal values)
+        vtk["displacement", WriteVTK.VTKPointData()] = (disp_x, disp_y, disp_z)
+
+        # Cell data (element-averaged values)
+        vtk["von_mises_stress", WriteVTK.VTKCellData()] = cell_vm
+        vtk["stress_xx", WriteVTK.VTKCellData()] = collect(cell_σ_xx)
+        vtk["stress_yy", WriteVTK.VTKCellData()] = collect(cell_σ_yy)
+        vtk["stress_zz", WriteVTK.VTKCellData()] = collect(cell_σ_zz)
+        vtk["stress_xy", WriteVTK.VTKCellData()] = collect(cell_σ_xy)
+        vtk["stress_yz", WriteVTK.VTKCellData()] = collect(cell_σ_yz)
+        vtk["stress_xz", WriteVTK.VTKCellData()] = collect(cell_σ_xz)
+    end
+
+    print_success("Full results exported to $(output_path).vtu")
+
+    return max_vm, max_vm_cell
+end
+
+"""
     analyze_solid_mesh_gridap(filepath::String, taskname::String)
 
 Analyzes a solid tetrahedral mesh using Gridap.jl for FEM computation.
@@ -354,18 +581,32 @@ function analyze_solid_mesh_gridap(filepath::String, taskname::String)
     # Compute volume
     volume = sum(∫(1.0) * dΩ)
 
-    # Von Mises stress computation is omitted for simplicity
-    max_von_mises = 0.0
-    max_stress_cell = 0
+    # =========================================================================
+    # 9. Compute stress field for export and max von Mises
+    # =========================================================================
+    print_info("Computing stress field...")
+
+    # Stress field as a CellField: σ = σ_elastic(ε(u))
+    σ_field = σ_elastic ∘ ε(uh)
 
     # =========================================================================
-    # 9. Print results
+    # 10. Export results to VTU with full stress data
+    # =========================================================================
+    output_path = joinpath(RESULTS_DIR, "$(taskname)_gridap_results")
+
+    # Use the full export function that includes cell-averaged stress
+    max_von_mises, max_stress_cell =
+        export_gridap_full_results(model, Ω, dΩ, uh, σ_elastic, output_path)
+
+    # =========================================================================
+    # 11. Print results
     # =========================================================================
     print_success("\nRESULTS for $taskname (GRIDAP):")
     print_data("  Compliance (2*U): $compliance")
     print_data("  Deformation energy: $energy J")
     print_data("  Volume: $volume")
-    print_data("  Note: Max von Mises stress computation omitted")
+    print_data("  Max von Mises stress: $max_von_mises at cell $max_stress_cell")
+    print_data("  Results exported to: $(output_path).vtu")
 
     return (
         name = taskname,
