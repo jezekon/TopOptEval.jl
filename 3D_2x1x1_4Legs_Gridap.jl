@@ -134,6 +134,37 @@ function is_on_force_region(coord)
     return dist_sq <= (LOAD_RADIUS + tol)^2
 end
 
+"""
+    is_face_in_force_region(face_vertex_coords)
+
+Returns true if a boundary face is in the force region.
+A face is considered in the force region if:
+1. ALL vertices are on the x=XMAX plane (within tolerance)
+2. The face centroid is within the circular load region
+
+This is more robust than point-wise checking.
+"""
+function is_face_in_force_region(face_vertex_coords)
+    tol = NODE_SELECTION_TOL
+
+    # First check: ALL vertices must be on x=XMAX plane
+    for v in face_vertex_coords
+        if abs(v[1] - XMAX) > tol
+            return false
+        end
+    end
+
+    # Compute centroid for circle check
+    centroid = sum(face_vertex_coords) / length(face_vertex_coords)
+
+    # Check if centroid is in the circular region
+    y_center = YMAX / 2
+    z_center = ZMAX / 2
+    dist_sq = (centroid[2] - y_center)^2 + (centroid[3] - z_center)^2
+
+    return dist_sq <= (LOAD_RADIUS + tol)^2
+end
+
 # =============================================================================
 # VTU TO GRIDAP MODEL CONVERSION WITH PROPER LABELING
 # =============================================================================
@@ -554,29 +585,75 @@ function analyze_solid_mesh_gridap_fixed(filepath::String, taskname::String)
     σ_elastic(ε) = λ * tr(ε) * I3 + 2 * μ * ε
 
     # =========================================================================
-    # 5. Define weak form
+    # 5. Define weak form with CONSISTENT Neumann BC (SIMP-style approach)
     # =========================================================================
-    print_info("Defining weak form...")
+    print_info("Defining weak form with cell-based Neumann filtering...")
 
-    # Bilinear form (stiffness)
+    # Bilinear form (stiffness) - unchanged
     a(u, v) = ∫(ε(v) ⊙ σ_elastic(ε(u))) * dΩ
 
-    # Linear form (traction on force region)
-    force_area = π * LOAD_RADIUS^2
-    traction_magnitude = FORCE_TOTAL / force_area
+    # -------------------------------------------------------------------------
+    # 5a. Identify Neumann boundary faces
+    # -------------------------------------------------------------------------
+    face_coords_all = get_cell_coordinates(Γ)
+    n_boundary_faces = num_cells(Γ)
 
-    print_info("  Force area: $(round(force_area, digits=6))")
-    print_info("  Traction magnitude: $(round(traction_magnitude, digits=4))")
-
-    function traction_field(x)
-        if is_on_force_region(x)
-            return VectorValue(0.0, 0.0, traction_magnitude)
-        else
-            return VectorValue(0.0, 0.0, 0.0)
+    neumann_face_ids = Int[]
+    for (i, face_coords) in enumerate(face_coords_all)
+        if is_face_in_force_region(face_coords)
+            push!(neumann_face_ids, i)
         end
     end
 
-    l(v) = ∫(v ⋅ traction_field) * dΓ
+    n_neumann = length(neumann_face_ids)
+    print_info("  Boundary faces: $n_boundary_faces total, $n_neumann in force region")
+
+    if n_neumann == 0
+        print_error("No Neumann boundary faces found!")
+        error("Neumann BC detection failed")
+    end
+
+    # -------------------------------------------------------------------------
+    # 5b. Create characteristic function for Neumann faces (cell-based, not point-based!)
+    # -------------------------------------------------------------------------
+    χ_neumann = [i in neumann_face_ids ? 1.0 : 0.0 for i = 1:n_boundary_faces]
+    χ_N = CellField(χ_neumann, Γ)
+
+    # -------------------------------------------------------------------------
+    # 5c. Compute ACTUAL Neumann boundary area (consistent with filtering)
+    # -------------------------------------------------------------------------
+    neumann_area = sum(∫(χ_N) * dΓ)
+    analytical_area = π * LOAD_RADIUS^2
+
+    print_info("  Analytical force area (π×r²): $(round(analytical_area, digits=6))")
+    print_info("  Actual Neumann boundary area: $(round(neumann_area, digits=6))")
+    print_info(
+        "  Ratio (actual/analytical): $(round(neumann_area/analytical_area, digits=4))",
+    )
+
+    if neumann_area < 1e-12
+        print_error("Neumann boundary area is zero!")
+        error("Invalid Neumann boundary")
+    end
+
+    # -------------------------------------------------------------------------
+    # 5d. Compute traction using ACTUAL area (this is the key fix!)
+    # -------------------------------------------------------------------------
+    traction_magnitude = FORCE_TOTAL / neumann_area  # ← CONSISTENT with actual area!
+
+    print_info("  Traction magnitude: $(round(traction_magnitude, digits=4))")
+    print_info(
+        "  Total applied force: $(round(traction_magnitude * neumann_area, digits=6))",
+    )
+
+    # Traction vector (uniform in Z direction)
+    t_N = VectorValue(0.0, 0.0, traction_magnitude)
+
+    # -------------------------------------------------------------------------
+    # 5e. Linear form with filtered boundary measure
+    # -------------------------------------------------------------------------
+    # KEY: Multiply integrand by χ_N to restrict integration to Neumann faces only
+    l(v) = ∫(χ_N * (v ⋅ t_N)) * dΓ
 
     # =========================================================================
     # 6. Assemble and solve
@@ -612,6 +689,17 @@ function analyze_solid_mesh_gridap_fixed(filepath::String, taskname::String)
     energy = 0.5 * sum(∫(ε(uh) ⊙ σ_elastic(ε(uh))) * dΩ)
     compliance = 2.0 * energy
     volume = sum(∫(1.0) * dΩ)
+
+    # =========================================================================
+    # 8b. Verify applied force (optional diagnostic)
+    # =========================================================================
+    # Work done by external forces should equal 2 × strain energy
+    work = sum(∫(χ_N * (uh ⋅ t_N)) * dΓ)
+    print_info("  Work done by traction: $work")
+    print_info("  Compliance (2×energy): $compliance")
+    print_info(
+        "  Relative difference: $(round(abs(work - compliance)/compliance * 100, digits=2))%",
+    )
 
     # =========================================================================
     # 9. Export results
