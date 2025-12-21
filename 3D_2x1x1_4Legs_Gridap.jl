@@ -425,13 +425,26 @@ function export_gridap_full_results(model, Ω, dΩ, uh, σ_elastic, output_path)
 
     # Extract nodal displacements
     disp_x, disp_y, disp_z = zeros(n_nodes), zeros(n_nodes), zeros(n_nodes)
+    # for (node_id, coord) in enumerate(node_coords)
+    #     try
+    #         u_val = uh(coord)
+    #         disp_x[node_id], disp_y[node_id], disp_z[node_id] = u_val[1], u_val[2], u_val[3]
+    #     catch
+    #         # Node might be slightly outside domain due to numerical precision
+    #     end
+    # end
+    failed_nodes = 0
     for (node_id, coord) in enumerate(node_coords)
         try
             u_val = uh(coord)
             disp_x[node_id], disp_y[node_id], disp_z[node_id] = u_val[1], u_val[2], u_val[3]
-        catch
-            # Node might be slightly outside domain due to numerical precision
+        catch e
+            failed_nodes += 1
+            # Node might be slightly outside domain
         end
+    end
+    if failed_nodes > 0
+        print_warning("  Failed to evaluate displacement at $failed_nodes nodes")
     end
 
     # Compute cell-averaged stress via L2 projection to DG0
