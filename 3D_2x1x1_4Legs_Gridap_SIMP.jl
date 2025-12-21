@@ -124,6 +124,128 @@ function simp_interp(ρ)
 end
 
 # =============================================================================
+# BOUNDARY CONDITIONS EXPORT
+# =============================================================================
+
+"""
+Export boundary conditions to VTU for ParaView visualization.
+Creates a surface mesh with BC type markers:
+- 0 = no BC (internal/other boundary)
+- 1 = fixed (Dirichlet BC)
+- 2 = force (Neumann BC)
+"""
+function export_gridap_bc(model, fixed_vids, neumann_face_ids, output_path)
+    print_info("Exporting boundary conditions to: $(output_path).vtu")
+
+    # Create boundary triangulation to get all boundary faces
+    Γ = BoundaryTriangulation(model)
+    cell_coords = get_cell_coordinates(Γ)
+    n_faces = length(cell_coords)
+
+    print_info("  Processing $n_faces boundary faces...")
+
+    # Build unique node list and face connectivity for the boundary mesh
+    node_dict = Dict{NTuple{3,Float64},Int}()
+    node_list = Vector{NTuple{3,Float64}}()
+    face_connectivity = Vector{Vector{Int}}()
+
+    for face_coords in cell_coords
+        face_node_ids = Int[]
+        for coord in face_coords
+            # Round coordinates to avoid floating point precision issues
+            key = (
+                round(coord[1], digits = 10),
+                round(coord[2], digits = 10),
+                round(coord[3], digits = 10),
+            )
+            if haskey(node_dict, key)
+                push!(face_node_ids, node_dict[key])
+            else
+                push!(node_list, key)
+                node_dict[key] = length(node_list)
+                push!(face_node_ids, length(node_list))
+            end
+        end
+        push!(face_connectivity, face_node_ids)
+    end
+
+    print_info("  Unique boundary nodes: $(length(node_list))")
+
+    # Determine BC type for each face based on its vertices/centroid
+    bc_types = zeros(Int, n_faces)
+
+    for (i, face_coords) in enumerate(cell_coords)
+        # Calculate face centroid for BC region detection
+        centroid = sum(face_coords) / length(face_coords)
+
+        # Check if face is in fixed region (all vertices must be on fixed corners)
+        all_fixed = all(v -> is_on_fixed_corner(v), face_coords)
+
+        # Check if face is in force region
+        in_force = is_face_in_force_region(face_coords)
+
+        if all_fixed
+            bc_types[i] = 1  # Fixed (Dirichlet)
+        elseif in_force || i in neumann_face_ids
+            bc_types[i] = 2  # Force (Neumann)
+        else
+            bc_types[i] = 0  # No BC / other boundary
+        end
+    end
+
+    # Count BC types for reporting
+    n_fixed = count(==(1), bc_types)
+    n_force = count(==(2), bc_types)
+    n_other = count(==(0), bc_types)
+
+    print_info("  BC face distribution:")
+    print_info("    Fixed (Dirichlet): $n_fixed faces")
+    print_info("    Force (Neumann):   $n_force faces")
+    print_info("    Other/No BC:       $n_other faces")
+
+    # Convert node list to point matrix for WriteVTK
+    points = zeros(Float64, 3, length(node_list))
+    for (i, node) in enumerate(node_list)
+        points[:, i] = [node[1], node[2], node[3]]
+    end
+
+    # Create VTK mesh cells based on face topology
+    # Note: Need to convert from Gridap to VTK node ordering
+    # Gridap uses lexicographic ordering for quad faces: [(0,0), (1,0), (0,1), (1,1)]
+    # VTK QUAD expects counter-clockwise ordering: [(0,0), (1,0), (1,1), (0,1)]
+    # Conversion permutation: (1, 2, 4, 3) - swap nodes 3 and 4
+    gridap_to_vtk_quad = (1, 2, 4, 3)
+
+    vtk_cells = WriteVTK.MeshCell[]
+    for face_nodes in face_connectivity
+        if length(face_nodes) == 3
+            # Triangular face - no reordering needed
+            push!(
+                vtk_cells,
+                WriteVTK.MeshCell(WriteVTK.VTKCellTypes.VTK_TRIANGLE, face_nodes),
+            )
+        elseif length(face_nodes) == 4
+            # Quadrilateral face - convert Gridap → VTK ordering
+            vtk_face_nodes = face_nodes[collect(gridap_to_vtk_quad)]
+            push!(
+                vtk_cells,
+                WriteVTK.MeshCell(WriteVTK.VTKCellTypes.VTK_QUAD, vtk_face_nodes),
+            )
+        else
+            print_warning("  Skipping face with $(length(face_nodes)) nodes (unsupported)")
+        end
+    end
+
+    # Export to VTU file
+    vtk_grid(output_path, points, vtk_cells) do vtk
+        vtk["boundary_type", WriteVTK.VTKCellData()] = bc_types
+    end
+
+    print_success("  Boundary conditions exported successfully")
+    print_info("  Output: $(output_path).vtu")
+end
+
+# =============================================================================
 # VTU IMPORT WITH BOUNDARY TAGGING
 # =============================================================================
 
@@ -418,6 +540,10 @@ function analyze_simp_gridap()
     neumann_face_ids, n_neumann = tag_neumann_boundary(model)
 
     n_neumann == 0 && error("No suitable boundary found for Neumann BC!")
+
+    # Export boundary conditions for visualization
+    bc_output_path = joinpath(OUTPUT_DIR, "simp_boundary_conditions")
+    export_gridap_bc(model, fixed_vids, neumann_face_ids, bc_output_path)
 
     # Create triangulations
     Ω = Triangulation(model)
