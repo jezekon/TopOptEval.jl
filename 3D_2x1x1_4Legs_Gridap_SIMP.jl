@@ -188,8 +188,14 @@ function import_simp_mesh(filepath::String)
             end
 
             # CRITICAL FIX: Convert 0-based → 1-based indexing if needed
+            # if minimum(cell_nodes) == 0
+            #     cell_nodes .+= 1
+            # end
             if minimum(cell_nodes) == 0
+                @warn "Unexpected 0-based connectivity detected! Converting to 1-based."
                 cell_nodes .+= 1
+            elseif minimum(cell_nodes) < 1
+                error("Invalid connectivity indices: minimum = $(minimum(cell_nodes))")
             end
 
             # CRITICAL FIX: Reorder VTK node ordering → Gridap ordering
@@ -324,55 +330,55 @@ end
 Create a mask identifying which boundary faces are in the force region.
 Returns a Vector{Bool} with length equal to number of boundary faces.
 """
-function create_neumann_mask(model)
-    Γ_all = BoundaryTriangulation(model)
-    face_coords_all = get_cell_coordinates(Γ_all)
-
-    n_boundary = num_cells(Γ_all)
-    force_mask = Vector{Bool}(undef, n_boundary)
-
-    force_count = 0
-    xmax_count = 0
-
-    for (i, face_coords) in enumerate(face_coords_all)
-        # Check if face is in force region
-        in_force = is_face_in_force_region(face_coords)
-        force_mask[i] = in_force
-
-        if in_force
-            force_count += 1
-        end
-
-        # Also count faces on x=XMAX for debugging
-        if is_face_on_xmax(face_coords)
-            xmax_count += 1
-        end
-    end
-
-    print_info("  Faces on x=XMAX plane: $xmax_count")
-    print_info("  Faces in force region (circle): $force_count")
-
-    if force_count == 0 && xmax_count > 0
-        print_warning("  No faces in circular region, but $xmax_count on x=XMAX")
-        print_warning("  Circle center: ($(YMAX/2), $(ZMAX/2)), radius: $LOAD_RADIUS")
-
-        # Show some face centroids for debugging
-        count_shown = 0
-        for (i, face_coords) in enumerate(face_coords_all)
-            if is_face_on_xmax(face_coords) && count_shown < 5
-                centroid = sum(face_coords) / length(face_coords)
-                y_c, z_c = YMAX / 2, ZMAX / 2
-                dist = sqrt((centroid[2] - y_c)^2 + (centroid[3] - z_c)^2)
-                print_info(
-                    "    Face $i: centroid = $centroid, dist from center = $(round(dist, digits=4))",
-                )
-                count_shown += 1
-            end
-        end
-    end
-
-    return force_mask, xmax_count
-end
+# function create_neumann_mask(model)
+#     Γ_all = BoundaryTriangulation(model)
+#     face_coords_all = get_cell_coordinates(Γ_all)
+#
+#     n_boundary = num_cells(Γ_all)
+#     force_mask = Vector{Bool}(undef, n_boundary)
+#
+#     force_count = 0
+#     xmax_count = 0
+#
+#     for (i, face_coords) in enumerate(face_coords_all)
+#         # Check if face is in force region
+#         in_force = is_face_in_force_region(face_coords)
+#         force_mask[i] = in_force
+#
+#         if in_force
+#             force_count += 1
+#         end
+#
+#         # Also count faces on x=XMAX for debugging
+#         if is_face_on_xmax(face_coords)
+#             xmax_count += 1
+#         end
+#     end
+#
+#     print_info("  Faces on x=XMAX plane: $xmax_count")
+#     print_info("  Faces in force region (circle): $force_count")
+#
+#     if force_count == 0 && xmax_count > 0
+#         print_warning("  No faces in circular region, but $xmax_count on x=XMAX")
+#         print_warning("  Circle center: ($(YMAX/2), $(ZMAX/2)), radius: $LOAD_RADIUS")
+#
+#         # Show some face centroids for debugging
+#         count_shown = 0
+#         for (i, face_coords) in enumerate(face_coords_all)
+#             if is_face_on_xmax(face_coords) && count_shown < 5
+#                 centroid = sum(face_coords) / length(face_coords)
+#                 y_c, z_c = YMAX / 2, ZMAX / 2
+#                 dist = sqrt((centroid[2] - y_c)^2 + (centroid[3] - z_c)^2)
+#                 print_info(
+#                     "    Face $i: centroid = $centroid, dist from center = $(round(dist, digits=4))",
+#                 )
+#                 count_shown += 1
+#             end
+#         end
+#     end
+#
+#     return force_mask, xmax_count
+# end
 
 # =============================================================================
 # TAG NEUMANN BOUNDARY FACES
@@ -538,7 +544,7 @@ function analyze_simp_gridap()
     # =========================================================================
 
     # Bilinear form with density-dependent material
-    a(u, v) = ∫(λ_h * (tr(ε(u)) * tr(ε(v))) + 2 * μ_h * (ε(v) ⊙ ε(u))) * dΩ
+    a(u, v) = ∫(λ_h * (tr(ε(u)) * tr(ε(v))) + 2 * μ_h * (ε(u) ⊙ ε(v))) * dΩ
 
     # Linear form - traction on Neumann boundary (filtered by χ_N)
     # Traction vector: (0, 0, traction_mag) - force in Z direction
