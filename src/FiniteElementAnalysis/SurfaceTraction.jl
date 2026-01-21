@@ -6,38 +6,15 @@
 # integration over boundary facets. This approach ensures consistent results
 # regardless of mesh refinement.
 #
+# NOTE: Uses get_face_nodes() defined in the parent FiniteElementAnalysis module
+# to ensure consistent face definitions across all components.
+#
 # =============================================================================
 
 export get_boundary_facets, apply_surface_traction!, compute_boundary_area
 
-# =============================================================================
-# FACE NODE CONNECTIVITY
-# =============================================================================
-
-"""
-    get_face_nodes(cell::Ferrite.AbstractCell)
-
-Returns local node indices for each face of the given cell type.
-Used internally by `get_boundary_facets` to identify boundary faces.
-
-# Returns
-- `Vector{NTuple}`: Array of tuples containing local node indices for each face
-"""
-function get_face_nodes(cell::Ferrite.Tetrahedron)
-    return [(1, 2, 3), (1, 2, 4), (2, 3, 4), (1, 3, 4)]
-end
-
-function get_face_nodes(cell::Ferrite.Hexahedron)
-    # Must match Ferrite's face ordering for correct FacetValues integration
-    return [
-        (1, 4, 3, 2),  # face 1
-        (1, 2, 6, 5),  # face 2
-        (2, 3, 7, 6),  # face 3
-        (3, 4, 8, 7),  # face 4
-        (1, 5, 8, 4),  # face 5
-        (5, 6, 7, 8),  # face 6
-    ]
-end
+# Note: get_face_nodes is defined in parent module (FiniteElementAnalysis.jl)
+# and is available here without explicit import
 
 # =============================================================================
 # BOUNDARY FACET IDENTIFICATION
@@ -48,6 +25,9 @@ end
 
 Identifies boundary facets (cell faces) where ALL vertices belong to the 
 specified node set. This is used to define surfaces for traction application.
+
+IMPORTANT: The returned local_face_id corresponds to Ferrite's face numbering,
+which must match the get_face_nodes() definition for correct FacetValues integration.
 
 # Arguments
 - `grid::Grid`: Ferrite computational mesh
@@ -67,6 +47,8 @@ function get_boundary_facets(grid::Grid, nodes::Set{Int})
 
     for cell_id = 1:getncells(grid)
         cell = getcells(grid, cell_id)
+
+        # Use shared face definition from parent module
         face_nodes_list = get_face_nodes(cell)
 
         for (local_face_id, face_nodes) in enumerate(face_nodes_list)
@@ -303,3 +285,4 @@ function apply_uniform_surface_traction!(
     # Apply using general surface traction function
     apply_surface_traction!(f, dh, grid, boundary_facets, traction_fn)
 end
+

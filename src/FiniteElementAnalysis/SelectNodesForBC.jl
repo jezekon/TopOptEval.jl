@@ -4,10 +4,16 @@ Surface Node Selection Module for Efficient Boundary Condition Application
 This module provides optimized functions for selecting nodes on mesh surfaces
 for boundary condition application. It pre-computes surface nodes to avoid
 redundant calculations and ensures only boundary nodes are considered.
+
+NOTE: Uses get_face_nodes() defined in the parent FiniteElementAnalysis module
+to ensure consistent face definitions across all components.
 """
 
 using Ferrite
 using LinearAlgebra
+
+# Note: get_face_nodes is defined in parent module (FiniteElementAnalysis.jl)
+# and is available here without explicit import
 
 """
     SurfaceNodeCache
@@ -59,14 +65,14 @@ function extract_surface_nodes!(cache::SurfaceNodeCache, grid::Grid)
     for cell_idx = 1:getncells(grid)
         cell = getcells(grid, cell_idx)
 
-        # Get all faces of the current cell
-        faces = get_faces(cell)
+        # Get all faces of the current cell using shared definition
+        faces = get_face_nodes(cell)
 
         # Process each face
         for face_nodes in faces
             # Sort node IDs to create a canonical representation of the face
             # This ensures that faces shared by two elements are properly counted
-            sorted_face = Tuple(sort(face_nodes))
+            sorted_face = Tuple(sort(collect(face_nodes)))
 
             # Count how many elements this face belongs to
             face_count[sorted_face] = get(face_count, sorted_face, 0) + 1
@@ -114,55 +120,6 @@ function extract_surface_nodes!(cache::SurfaceNodeCache, grid::Grid)
     println(
         "Surface coverage: $(round(length(surface_node_set)/getnnodes(grid)*100, digits=1))%",
     )
-end
-
-"""
-    get_faces(cell::Ferrite.AbstractCell)
-
-Returns all faces of a given cell as vectors of node connectivity.
-This is a generic dispatch function that handles different cell types.
-
-Parameters:
-- `cell`: Ferrite cell object
-
-Returns:
-- `Vector{Vector{Int}}`: Array of faces, each face is an array of node IDs
-"""
-function get_faces(cell::Ferrite.Tetrahedron)
-    return [
-        [cell.nodes[1], cell.nodes[2], cell.nodes[3]], # Face 1: nodes 1-2-3
-        [cell.nodes[1], cell.nodes[2], cell.nodes[4]], # Face 2: nodes 1-2-4  
-        [cell.nodes[2], cell.nodes[3], cell.nodes[4]], # Face 3: nodes 2-3-4
-        [cell.nodes[1], cell.nodes[3], cell.nodes[4]],  # Face 4: nodes 1-3-4
-    ]
-end
-
-function get_faces(cell::Ferrite.Hexahedron)
-    return [
-        [cell.nodes[1], cell.nodes[2], cell.nodes[3], cell.nodes[4]], # Bottom face (z=0)
-        [cell.nodes[5], cell.nodes[6], cell.nodes[7], cell.nodes[8]], # Top face (z=1)
-        [cell.nodes[1], cell.nodes[2], cell.nodes[6], cell.nodes[5]], # Front face (y=0)
-        [cell.nodes[2], cell.nodes[3], cell.nodes[7], cell.nodes[6]], # Right face (x=1)
-        [cell.nodes[3], cell.nodes[4], cell.nodes[8], cell.nodes[7]], # Back face (y=1)
-        [cell.nodes[4], cell.nodes[1], cell.nodes[5], cell.nodes[8]],  # Left face (x=0)
-    ]
-end
-
-function get_faces(cell::Ferrite.Triangle)
-    return [
-        [cell.nodes[1], cell.nodes[2]], # Edge 1: nodes 1-2
-        [cell.nodes[2], cell.nodes[3]], # Edge 2: nodes 2-3
-        [cell.nodes[3], cell.nodes[1]],  # Edge 3: nodes 3-1
-    ]
-end
-
-function get_faces(cell::Ferrite.Quadrilateral)
-    return [
-        [cell.nodes[1], cell.nodes[2]], # Edge 1: nodes 1-2
-        [cell.nodes[2], cell.nodes[3]], # Edge 2: nodes 2-3
-        [cell.nodes[3], cell.nodes[4]], # Edge 3: nodes 3-4
-        [cell.nodes[4], cell.nodes[1]],  # Edge 4: nodes 4-1
-    ]
 end
 
 """
@@ -278,6 +235,9 @@ function select_surface_nodes_by_circle(
     # Initialize set for nodes within the circular region
     nodes_in_circle = Set{Int}()
 
+    # Effective radius with tolerance (mathematically correct)
+    effective_radius = radius + tolerance
+
     # Check which plane nodes are within the circle radius
     for node_id in nodes_on_plane
         # Get node coordinates from cache
@@ -294,8 +254,8 @@ function select_surface_nodes_by_circle(
         # Calculate distance from center within the plane
         planar_distance = norm(plane_projection)
 
-        # Include node if it's within the circle radius (with tolerance)
-        if planar_distance <= radius + tolerance
+        # Include node if it's within the effective circle radius
+        if planar_distance <= effective_radius
             push!(nodes_in_circle, node_id)
         end
     end
