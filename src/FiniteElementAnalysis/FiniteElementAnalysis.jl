@@ -34,6 +34,10 @@ export apply_volume_force!,
 include("RobustSolver.jl")
 export solve_system_robust, solve_system_robust_simp, SolverConfig
 
+include("SurfaceTraction.jl")
+export get_boundary_facets,
+    apply_surface_traction!, apply_uniform_surface_traction!, compute_boundary_area
+
 """
     create_material_model(youngs_modulus::Float64, poissons_ratio::Float64)
 
