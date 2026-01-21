@@ -1,21 +1,12 @@
 # =============================================================================
-# 3D MBB BEAM COMPLIANCE EVALUATION SCRIPT
+# 3D MBB BEAM COMPLIANCE EVALUATION
 # =============================================================================
 #
-# Description:
-#   Evaluates compliance (deformation energy) for all tetrahedral mesh files
-#   in the current directory. Automatically scans for *_TET.vtu files and
-#   processes each one with MBB boundary conditions.
+# Geometry: 2.0 × 1.0 × 1.0 (X × Y × Z)
+# BC:       Symmetry at x=0 (U1=0), Support at x=2,y=0 edge (U2=0)
+# Load:     Semicircle r=0.1 at (0, 1, 0.5) on top face, F=[0,-1,0] via surface traction
 #
-# Geometry:
-#   - Domain: 2.0 × 1.0 × 1.0 (X × Y × Z)
-#   - Symmetry: Left face (x=0) - U1=0 only
-#   - Support: Right bottom edge (x=2, y=0, all Z) - U2=0 only
-#   - Load: Semicircle on top face at (0, 1, 0.5), radius 0.1, force in -Y
-#
-# Usage:
-#   Place this script in the directory with *_TET.vtu files and run it.
-#   Results (.txt files) will be saved in the same directory.
+# Scans directory for *_TET.vtu files and evaluates compliance.
 #
 # =============================================================================
 
@@ -25,288 +16,182 @@ using Printf
 using Dates
 using TopOptEval
 using TopOptEval.Utils
-using Ferrite  # For getnnodes, getncells, ndofs
+using Ferrite
 
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
 
-# Working directory = directory where this script is located
 WORK_DIR = @__DIR__
 
-# Geometry parameters
-XMAX = 2.0
-YMAX = 1.0
-ZMAX = 1.0
-SUPPORT_WIDTH = 0.05     # Width of support region at right edge (x >= XMAX - SUPPORT_WIDTH)
-LOAD_RADIUS = 0.1        # Radius of semicircular load region
+# Geometry
+const XMAX = 2.0
+const YMAX = 1.0
+const ZMAX = 1.0
+const SUPPORT_WIDTH = 0.05
+const LOAD_RADIUS = 0.1
 
-# Material properties
-E0 = 1.0                 # Young's modulus
-NU = 0.3                 # Poisson's ratio
+# Material
+const E0 = 1.0
+const NU = 0.3
 
-# Force vector (MBB: force in -Y direction)
-FORCE_VECTOR = [0.0, -1.0, 0.0]
+# Loading
+const TOTAL_FORCE = [0.0, -1.0, 0.0]
 
-# Tolerance for node selection (scaled for 2x1x1 domain)
-NODE_SELECTION_TOL = 0.005
+# Tolerances (consistent with EasySIMP)
+const PLANE_TOL = 1e-6
+const GEOM_TOL = 1e-6
 
 # =============================================================================
-# HELPER FUNCTIONS
+# NODE SELECTION
 # =============================================================================
 
 """
-    find_tet_vtu_files(directory::String)
-
-Scans the specified directory for all *_TET.vtu files (tetrahedral meshes only).
-
-Returns:
-- Vector{String}: List of full paths to TET .vtu files
+Scan directory for *_TET.vtu files.
 """
 function find_tet_vtu_files(directory::String)
-    if !isdir(directory)
-        error("Directory not found: $directory")
-    end
-
-    vtu_files = String[]
-    for file in readdir(directory)
-        # Only process files ending with _TET.vtu (case insensitive)
-        if endswith(lowercase(file), "_tet.vtu")
-            push!(vtu_files, joinpath(directory, file))
-        end
-    end
-
-    # Sort alphabetically for consistent ordering
-    sort!(vtu_files)
-
-    return vtu_files
+    !isdir(directory) && error("Directory not found: $directory")
+    files = [
+        joinpath(directory, f) for
+        f in readdir(directory) if endswith(lowercase(f), "_tet.vtu")
+    ]
+    sort!(files)
 end
 
 """
-    select_symmetry_nodes(grid)
-
-Selects nodes on the left face (x=0) for symmetry boundary condition.
-These nodes will be fixed in X direction only (U1=0).
-
-Returns:
-- Set{Int}: Set of node IDs for symmetry boundary condition
+Select nodes on x=0 face for symmetry BC (U1=0).
 """
 function select_symmetry_nodes(grid)
-    symmetry_nodes = Set{Int}()
-
-    for node_id = 1:getnnodes(grid)
-        coord = grid.nodes[node_id].x
-        x = coord[1]
-
-        # Check if node is on the x=0 face (symmetry plane)
-        if abs(x) < NODE_SELECTION_TOL
-            push!(symmetry_nodes, node_id)
-        end
+    nodes = Set{Int}()
+    for nid = 1:getnnodes(grid)
+        x = grid.nodes[nid].x[1]
+        abs(x) < PLANE_TOL && push!(nodes, nid)
     end
-
-    return symmetry_nodes
+    nodes
 end
 
 """
-    select_support_nodes(grid)
-
-Selects nodes on the right bottom edge for support boundary condition.
-These nodes are at y=0 (bottom face) and x >= XMAX - SUPPORT_WIDTH (right edge).
-They will be fixed in Y direction only (U2=0).
-
-Returns:
-- Set{Int}: Set of node IDs for support boundary condition
+Select nodes on right bottom edge (x >= XMAX-SUPPORT_WIDTH, y=0) for support BC (U2=0).
 """
 function select_support_nodes(grid)
-    support_nodes = Set{Int}()
-
-    for node_id = 1:getnnodes(grid)
-        coord = grid.nodes[node_id].x
-        x, y = coord[1], coord[2]
-
-        # Check if node is on bottom face (y=0) AND on right edge (x >= XMAX - SUPPORT_WIDTH)
-        if abs(y) < NODE_SELECTION_TOL && x >= XMAX - SUPPORT_WIDTH - NODE_SELECTION_TOL
-            push!(support_nodes, node_id)
+    nodes = Set{Int}()
+    for nid = 1:getnnodes(grid)
+        x, y = grid.nodes[nid].x[1], grid.nodes[nid].x[2]
+        if abs(y) < PLANE_TOL && x >= XMAX - SUPPORT_WIDTH - GEOM_TOL
+            push!(nodes, nid)
         end
     end
-
-    return support_nodes
+    nodes
 end
 
 """
-    select_semicircle_force_nodes(grid)
-
-Selects nodes in a semicircular region on the top face (y=YMAX).
-The semicircle is centered at (0, YMAX, ZMAX/2) with x >= 0.
-
-Returns:
-- Set{Int}: Set of node IDs for force application
+Select nodes in semicircular region on top face (y=YMAX).
+Center at (0, YMAX, ZMAX/2), x >= 0 (right half of circle).
 """
 function select_semicircle_force_nodes(grid)
-    force_nodes = Set{Int}()
+    nodes = Set{Int}()
+    cx, cz = 0.0, ZMAX / 2
 
-    # Force center on top face (y=YMAX), at x=0, z=ZMAX/2
-    force_center_x = 0.0
-    force_center_z = ZMAX / 2
-
-    for node_id = 1:getnnodes(grid)
-        coord = grid.nodes[node_id].x
-        x, y, z = coord[1], coord[2], coord[3]
-
-        # Check if node is on the top face (y=YMAX)
-        if abs(y - YMAX) < NODE_SELECTION_TOL
-            # Calculate distance from center in XZ plane
-            dx = x - force_center_x
-            dz = z - force_center_z
-            dist = sqrt(dx^2 + dz^2)
-
-            # Semicircle condition: within radius AND x >= 0 (right half)
-            if dist <= LOAD_RADIUS + NODE_SELECTION_TOL &&
-               x >= force_center_x - NODE_SELECTION_TOL
-                push!(force_nodes, node_id)
+    for nid = 1:getnnodes(grid)
+        x, y, z = grid.nodes[nid].x
+        if abs(y - YMAX) < PLANE_TOL
+            dist_sq = (x - cx)^2 + (z - cz)^2
+            # Semicircle: within radius AND x >= 0
+            if dist_sq <= LOAD_RADIUS^2 + GEOM_TOL && x >= cx - GEOM_TOL
+                push!(nodes, nid)
             end
         end
     end
+    isempty(nodes) && error("No force nodes found in semicircular region at y=$YMAX")
+    nodes
+end
 
-    # Fallback: if no nodes found, find closest node to force center
-    if isempty(force_nodes)
-        force_center = [force_center_x, YMAX, force_center_z]
-        min_dist = Inf
-        closest_node = 1
+# =============================================================================
+# ANALYSIS
+# =============================================================================
 
-        for node_id = 1:getnnodes(grid)
-            coord = grid.nodes[node_id].x
-            dist = norm([coord[1], coord[2], coord[3]] - force_center)
-            if dist < min_dist
-                min_dist = dist
-                closest_node = node_id
-            end
-        end
-
-        push!(force_nodes, closest_node)
-        @warn "No nodes found in semicircular region, using closest node: $closest_node"
+"""
+Export results summary to text file.
+"""
+function export_results_txt(name, compliance, volume, area, dir)
+    path = joinpath(dir, "$(name).txt")
+    open(path, "w") do io
+        println(io, "=" ^ 55)
+        println(io, "  MBB COMPLIANCE ANALYSIS (Surface Traction)")
+        println(io, "=" ^ 55)
+        println(io, "  Task:          $name")
+        println(io, "  Compliance:    $(@sprintf("%.6f", compliance))")
+        println(io, "  Volume:        $(@sprintf("%.6f", volume))")
+        println(io, "  Boundary area: $(@sprintf("%.6f", area))")
+        println(io, "  Traction:      $(@sprintf("%.4f", norm(TOTAL_FORCE)/area)) N/unit²")
+        println(io, "  Generated:     $(Dates.format(now(), "yyyy-mm-dd HH:MM:SS"))")
+        println(io, "=" ^ 55)
     end
-
-    return force_nodes
+    path
 end
 
 """
-    export_results_txt(taskname::String, compliance::Float64, volume::Float64, output_dir::String)
-
-Exports analysis results to a .txt summary file.
-
-Parameters:
-- taskname: Name of the task/mesh
-- compliance: Calculated compliance value
-- volume: Mesh volume
-- output_dir: Directory for output file
-"""
-function export_results_txt(
-    taskname::String,
-    compliance::Float64,
-    volume::Float64,
-    output_dir::String,
-)
-    txt_path = joinpath(output_dir, "$(taskname).txt")
-
-    open(txt_path, "w") do io
-        println(io, "==================================================")
-        println(io, "  TOPOLOGY OPTIMIZATION COMPLIANCE ANALYSIS")
-        println(io, "==================================================")
-        println(io, "  Task name:    $taskname")
-        println(io, "  Compliance:   $(@sprintf("%.6f", compliance))")
-        println(io, "  Volume:       $(@sprintf("%.6f", volume))")
-        println(io, "  Generated:    $(Dates.format(now(), "yyyy-mm-dd HH:MM:SS"))")
-        println(io, "==================================================")
-    end
-
-    return txt_path
-end
-
-"""
-    analyze_tet_mesh(filepath::String, taskname::String, output_dir::String)
-
-Analyzes a solid tetrahedral mesh.
-
-Parameters:
-- filepath: Path to the VTU file
-- taskname: Name for output files
-- output_dir: Directory for output files
-
-Returns:
-- NamedTuple with analysis results
+Analyze tetrahedral mesh using surface traction loading.
 """
 function analyze_tet_mesh(filepath::String, taskname::String, output_dir::String)
-    print_info("\n" * "="^70)
-    print_info("ANALYZING TET MESH: $taskname")
-    print_info("="^70)
+    print_info("\n" * "=" ^ 65)
+    print_info("ANALYZING: $taskname")
+    print_info("=" ^ 65)
 
-    # 1. Import mesh
-    print_info("Importing mesh from: $filepath")
+    # Import and setup
     grid = import_mesh(filepath)
-
-    # 2. Calculate volume (uniform density = 1.0)
     volume = Utils.calculate_volume(grid)
-
-    # 3. Create material model (standard linear elastic)
     λ, μ = create_material_model(E0, NU)
-
-    # 4. Setup FEM problem
-    print_info("Setting up FEM problem...")
     dh, cellvalues, K, f = setup_problem(grid)
-    print_info("DOFs: $(ndofs(dh))")
 
-    # 5. Assemble stiffness matrix
-    print_info("Assembling stiffness matrix...")
+    print_info(
+        "Elements: $(getncells(grid)), Nodes: $(getnnodes(grid)), DOFs: $(ndofs(dh))",
+    )
+
+    # Assemble
     assemble_stiffness_matrix!(K, f, dh, cellvalues, λ, μ)
 
-    # 6. Select boundary condition nodes
-    print_info("Selecting boundary condition nodes...")
+    # Boundary nodes
     symmetry_nodes = select_symmetry_nodes(grid)
     support_nodes = select_support_nodes(grid)
     force_nodes = select_semicircle_force_nodes(grid)
 
-    print_info("Symmetry nodes (X-fixed): $(length(symmetry_nodes))")
-    print_info("Support nodes (Y-fixed): $(length(support_nodes))")
-    print_info("Force nodes (semicircle): $(length(force_nodes))")
+    # Get facets for surface traction
+    force_facets = get_boundary_facets(grid, force_nodes)
+    boundary_area = compute_boundary_area(grid, dh, force_facets)
 
-    # 7. Apply boundary conditions
-    print_info("Applying boundary conditions...")
-    # Symmetry: fix X direction only (component 1)
-    ch1 = apply_sliding_boundary!(K, f, dh, symmetry_nodes, [1])
-    # Support: fix Y direction only (component 2)
-    ch2 = apply_sliding_boundary!(K, f, dh, support_nodes, [2])
+    print_info(
+        "Symmetry nodes: $(length(symmetry_nodes)), Support nodes: $(length(support_nodes))",
+    )
+    print_info(
+        "Force facets: $(length(force_facets)), Boundary area: $(round(boundary_area, digits=6))",
+    )
 
-    # 8. Apply force
-    print_info("Applying force: $FORCE_VECTOR")
-    apply_force!(f, dh, collect(force_nodes), FORCE_VECTOR)
+    # Apply sliding BCs
+    ch1 = apply_sliding_boundary!(K, f, dh, symmetry_nodes, [1])  # Fix X only
+    ch2 = apply_sliding_boundary!(K, f, dh, support_nodes, [2])   # Fix Y only
 
-    # 9. Solve the system (direct solver)
-    print_info("Solving linear system (direct solver)...")
-    u, energy, stress_field, max_von_mises, max_stress_cell =
+    # Apply surface traction
+    apply_uniform_surface_traction!(f, dh, grid, force_facets, TOTAL_FORCE)
+
+    # Solve (pass both constraint handlers)
+    u, energy, stress_field, max_vm, max_cell =
         solve_system(K, f, dh, cellvalues, λ, μ, ch1, ch2)
-
-    # 10. Calculate compliance (C = f^T * u = 2 * U)
     compliance = dot(f, u)
 
-    # 11. Print results
-    print_success("\nRESULTS for $taskname:")
-    print_data("  Compliance (f^T * u): $compliance")
-    print_data("  Deformation energy: $energy J")
-    print_data("  Volume: $volume")
-    print_data("  Maximum von Mises stress: $max_von_mises at cell $max_stress_cell")
+    # Results
+    print_success("Compliance: $compliance")
+    print_data("  Energy: $energy J, Max vM: $max_vm")
 
-    # 12. Export results to TXT summary (in the same directory as input)
-    txt_path = export_results_txt(taskname, compliance, volume, output_dir)
-    print_info("Results summary saved to: $txt_path")
+    export_results_txt(taskname, compliance, volume, boundary_area, output_dir)
 
-    return (
+    (
         name = taskname,
         compliance = compliance,
         energy = energy,
         volume = volume,
-        max_von_mises = max_von_mises,
-        max_stress_cell = max_stress_cell,
+        boundary_area = boundary_area,
+        max_von_mises = max_vm,
         n_elements = getncells(grid),
         n_nodes = getnnodes(grid),
         n_dofs = ndofs(dh),
@@ -314,139 +199,80 @@ function analyze_tet_mesh(filepath::String, taskname::String, output_dir::String
 end
 
 # =============================================================================
-# MAIN EXECUTION
+# MAIN
 # =============================================================================
 
-@testset "3D MBB Beam Compliance Evaluation" begin
+@testset "3D MBB Beam (Surface Traction)" begin
+    print_info("Directory: $WORK_DIR")
+    files = find_tet_vtu_files(WORK_DIR)
 
-    # Find all TET VTU files in the working directory
-    print_info("Scanning directory: $WORK_DIR")
-    input_files = find_tet_vtu_files(WORK_DIR)
+    isempty(files) && (print_warning("No *_TET.vtu files found"); @test false)
+    print_info("Found $(length(files)) files\n")
 
-    if isempty(input_files)
-        print_warning("No *_TET.vtu files found in $WORK_DIR")
-        @test false  # Fail if no files found
-    else
-        print_info("Found $(length(input_files)) TET mesh files to process")
-        println()
-    end
-
-    # Storage for all results
-    all_results = []
-
-    # Process each input file
-    for filepath in input_files
-        # Generate task name from filename (without extension)
-        taskname = splitext(basename(filepath))[1]
-
-        @testset "$taskname" begin
+    results = []
+    for f in files
+        name = splitext(basename(f))[1]
+        @testset "$name" begin
             try
-                # Output directory = same as input file location
-                output_dir = dirname(filepath)
-                result = analyze_tet_mesh(filepath, taskname, output_dir)
-                push!(all_results, result)
-
-                # Basic tests
-                @test result.compliance > 0.0
-                @test result.energy > 0.0
-                @test result.volume > 0.0
+                r = analyze_tet_mesh(f, name, dirname(f))
+                push!(results, r)
+                @test r.compliance > 0.0
             catch e
-                print_error("Failed to analyze $taskname: $e")
+                print_error("Failed: $e")
                 @test false
             end
         end
     end
 
-    # ==========================================================================
-    # SUMMARY COMPARISON
-    # ==========================================================================
-
-    if !isempty(all_results)
-        print_info("\n" * "="^80)
-        print_info("COMPLIANCE COMPARISON SUMMARY")
-        print_info("="^80)
-
-        # Print header
-        println()
-        println("┌" * "─"^50 * "┬" * "─"^15 * "┬" * "─"^15 * "┬" * "─"^12 * "┐")
+    # Summary
+    if !isempty(results)
+        println("\n" * "=" ^ 85)
+        println("SUMMARY")
+        println("=" ^ 85)
+        println("┌" * "─"^40 * "┬" * "─"^14 * "┬" * "─"^14 * "┬" * "─"^12 * "┐")
         println(
             "│ " *
-            rpad("Mesh Name", 48) *
+            rpad("Mesh", 38) *
             " │ " *
-            lpad("Compliance", 13) *
+            lpad("Compliance", 12) *
             " │ " *
-            lpad("Volume", 13) *
+            lpad("Area", 12) *
             " │ " *
             lpad("Elements", 10) *
             " │",
         )
-        println("├" * "─"^50 * "┼" * "─"^15 * "┼" * "─"^15 * "┼" * "─"^12 * "┤")
+        println("├" * "─"^40 * "┼" * "─"^14 * "┼" * "─"^14 * "┼" * "─"^12 * "┤")
 
-        # Reference compliance (first result)
-        ref_compliance = all_results[1].compliance
-
-        for result in all_results
-            name_short = length(result.name) > 48 ? result.name[1:45] * "..." : result.name
-
+        ref = results[1].compliance
+        for r in results
+            n = length(r.name) > 38 ? r.name[1:35] * "..." : r.name
             println(
                 "│ " *
-                rpad(name_short, 48) *
+                rpad(n, 38) *
                 " │ " *
-                lpad(@sprintf("%.6f", result.compliance), 13) *
+                lpad(@sprintf("%.6f", r.compliance), 12) *
                 " │ " *
-                lpad(@sprintf("%.6f", result.volume), 13) *
+                lpad(@sprintf("%.6f", r.boundary_area), 12) *
                 " │ " *
-                lpad(string(result.n_elements), 10) *
+                lpad(string(r.n_elements), 10) *
                 " │",
             )
         end
+        println("└" * "─"^40 * "┴" * "─"^14 * "┴" * "─"^14 * "┴" * "─"^12 * "┘")
 
-        println("└" * "─"^50 * "┴" * "─"^15 * "┴" * "─"^15 * "┴" * "─"^12 * "┘")
-
-        # Relative comparison
-        println("\n" * "─"^95)
-        println("RELATIVE COMPARISON (Reference: $(all_results[1].name))")
-        println("─"^95)
-
-        for (i, result) in enumerate(all_results)
-            rel_diff = (result.compliance - ref_compliance) / ref_compliance * 100
-            sign_str = rel_diff >= 0 ? "+" : ""
-            println("  $(result.name):")
-            println(
-                "    Compliance relative difference: $(sign_str)$(round(rel_diff, digits=2))%",
-            )
+        println("\nRelative to $(results[1].name):")
+        for r in results
+            diff = (r.compliance - ref) / ref * 100
+            println("  $(r.name): $(diff >= 0 ? "+" : "")$(round(diff, digits=2))%")
         end
-
-        println("\n" * "="^95)
-        print_success("Analysis completed for $(length(all_results)) meshes")
-        println("\nResults saved to: $(WORK_DIR)/")
-        println("="^95)
+        println("=" ^ 85)
     end
 end
 
-# =============================================================================
-# STANDALONE EXECUTION (when run directly, not as test)
-# =============================================================================
-
 if abspath(PROGRAM_FILE) == @__FILE__
-    println("\n" * "="^80)
-    println("3D MBB BEAM COMPLIANCE EVALUATION")
-    println("="^80)
-    println("\nGeometry: 2.0 × 1.0 × 1.0")
-    println("Symmetry: Left face (x=0) - X direction fixed")
-    println(
-        "Support: Right bottom edge (x≥$(XMAX - SUPPORT_WIDTH), y=0) - Y direction fixed",
-    )
-    println("Load: Semicircle r=$(LOAD_RADIUS) at (0, $(YMAX), $(ZMAX/2)), F=$FORCE_VECTOR")
-    println("Material: E=$(E0), ν=$(NU)")
-    println("\nWorking directory: $(WORK_DIR)/")
-
-    # List files that will be processed
-    files = find_tet_vtu_files(WORK_DIR)
-    println("\nTET mesh files to process ($(length(files))):")
-    for (i, f) in enumerate(files)
-        println("  $i. $(basename(f))")
-    end
-
-    println("="^80)
+    println("\n3D MBB BEAM")
+    println("Domain: $XMAX × $YMAX × $ZMAX")
+    println("Symmetry: x=0 (U1=0), Support: x≥$(XMAX-SUPPORT_WIDTH),y=0 (U2=0)")
+    println("Load: semicircle r=$LOAD_RADIUS at (0,$YMAX,$(ZMAX/2)), F=$TOTAL_FORCE")
+    println("Files: ", length(find_tet_vtu_files(WORK_DIR)))
 end
