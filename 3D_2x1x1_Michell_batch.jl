@@ -39,8 +39,8 @@ const NU = 0.3
 const TOTAL_FORCE = [0.0, -1.0, 0.0]
 
 # Tolerances (consistent with EasySIMP)
-const PLANE_TOL = 1e-6
-const GEOM_TOL = 1e-6
+const PLANE_TOL = 1e-7
+const GEOM_TOL = 1e-7
 
 # =============================================================================
 # NODE SELECTION
