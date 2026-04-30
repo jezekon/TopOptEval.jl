@@ -513,6 +513,8 @@ end
 Robust solver for FEM systems with automatic method selection and comprehensive
 error handling. Uses only Krylov.jl for iterative methods.
 
+Constraints are applied here (single application point) using apply!().
+
 Parameters:
 - `K`: global stiffness matrix
 - `f`: global load vector
@@ -536,9 +538,9 @@ function solve_system_robust(
     config::SolverConfig = SolverConfig(),
 )
 
-    # Apply all constraint handlers to the system
+    # Apply all constraint handlers to the system (SINGLE APPLICATION POINT)
     for ch in constraints
-        apply_zero!(K, f, ch)
+        apply!(K, f, ch)
     end
 
     # Analyze matrix properties for optimal solver selection
@@ -625,6 +627,8 @@ end
 Robust solver for SIMP-based FEM systems with variable material properties.
 Uses only Krylov.jl for iterative methods.
 
+Constraints are applied here (single application point) using apply!().
+
 Parameters:
 - `K`: global stiffness matrix
 - `f`: global load vector  
@@ -649,9 +653,9 @@ function solve_system_robust_simp(
     config::SolverConfig = SolverConfig(),
 )
 
-    # Apply all constraint handlers to the system
+    # Apply all constraint handlers to the system (SINGLE APPLICATION POINT)
     for ch in constraints
-        apply_zero!(K, f, ch)
+        apply!(K, f, ch)
     end
 
     # Analyze matrix properties for optimal solver selection

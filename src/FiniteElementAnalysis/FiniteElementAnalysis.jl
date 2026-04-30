@@ -23,6 +23,54 @@ export create_material_model,
     solve_system_simp,
     solve_system_adaptive
 
+# =============================================================================
+# SHARED FACE CONNECTIVITY DEFINITIONS
+# =============================================================================
+# These definitions match Ferrite's internal face ordering and are used by
+# both SelectNodesForBC.jl and SurfaceTraction.jl
+
+"""
+    get_face_nodes(cell::Ferrite.AbstractCell)
+
+Returns face node connectivity for a given cell type.
+CRITICAL: Node ordering matches Ferrite's internal convention for correct
+FacetValues integration.
+
+# Returns
+- `Vector{NTuple}`: Array of tuples containing local node indices for each face
+"""
+function get_face_nodes(cell::Ferrite.Tetrahedron)
+    # Ferrite convention: ((1,3,2), (1,2,4), (2,3,4), (1,4,3))
+    return [(1, 3, 2), (1, 2, 4), (2, 3, 4), (1, 4, 3)]
+end
+
+function get_face_nodes(cell::Ferrite.Hexahedron)
+    # Ferrite convention: ((1,4,3,2), (1,2,6,5), (2,3,7,6), (3,4,8,7), (1,5,8,4), (5,6,7,8))
+    return [
+        (1, 4, 3, 2),  # face 1 - bottom (z=0)
+        (1, 2, 6, 5),  # face 2 - front (y=0)
+        (2, 3, 7, 6),  # face 3 - right (x=1)
+        (3, 4, 8, 7),  # face 4 - back (y=1)
+        (1, 5, 8, 4),  # face 5 - left (x=0)
+        (5, 6, 7, 8),  # face 6 - top (z=1)
+    ]
+end
+
+function get_face_nodes(cell::Ferrite.Triangle)
+    # Edges for 2D triangle
+    return [(1, 2), (2, 3), (3, 1)]
+end
+
+function get_face_nodes(cell::Ferrite.Quadrilateral)
+    # Edges for 2D quadrilateral
+    return [(1, 2), (2, 3), (3, 4), (4, 1)]
+end
+
+# Export for use by other modules
+export get_face_nodes
+
+# =============================================================================
+
 include("SelectNodesForBC.jl")
 export select_nodes_by_plane, select_nodes_by_circle
 
@@ -33,6 +81,10 @@ export apply_volume_force!,
 # Include the robust solver module
 include("RobustSolver.jl")
 export solve_system_robust, solve_system_robust_simp, SolverConfig
+
+include("SurfaceTraction.jl")
+export get_boundary_facets,
+    apply_surface_traction!, apply_uniform_surface_traction!, compute_boundary_area
 
 """
     create_material_model(youngs_modulus::Float64, poissons_ratio::Float64)
@@ -243,18 +295,21 @@ end
 """
     apply_fixed_boundary!(K, f, dh, nodes)
 
-Applies fixed boundary conditions (all DOFs fixed) to the specified nodes.
+Creates a ConstraintHandler for fixed boundary conditions (all DOFs fixed).
+
+Note: The constraints are NOT applied to K and f here. They will be applied
+once in solve_system() to avoid double application.
 
 Parameters:
 
-  - `K`: global stiffness matrix
-  - `f`: global load vector
+  - `K`: global stiffness matrix (passed for API consistency, not modified)
+  - `f`: global load vector (passed for API consistency, not modified)
   - `dh`: DofHandler
   - `nodes`: Set or Array of node IDs to be fixed
 
 Returns:
 
-  - ConstraintHandler with the applied constraints
+  - ConstraintHandler with the defined constraints (ready to be applied)
 """
 function apply_fixed_boundary!(K, f, dh, nodes)
     dim = 3  # 3D problem
@@ -262,7 +317,7 @@ function apply_fixed_boundary!(K, f, dh, nodes)
     # Create constraint handler
     ch = ConstraintHandler(dh)
 
-    # Apply Dirichlet boundary conditions for fixed nodes
+    # Define Dirichlet boundary conditions for fixed nodes
     # Fix each component individually
     for d = 1:dim
         dbc = Dirichlet(:u, nodes, (x, t) -> 0.0, d)
@@ -271,35 +326,38 @@ function apply_fixed_boundary!(K, f, dh, nodes)
 
     close!(ch)
     update!(ch, 0.0)
-    apply!(K, f, ch)
+    # NOTE: Do NOT apply here - will be applied once in solve_system()
 
-    println("Applied fixed boundary conditions to $(length(nodes)) nodes")
+    println("Defined fixed boundary conditions for $(length(nodes)) nodes")
     return ch
 end
 
 """
     apply_sliding_boundary!(K, f, dh, nodes, fixed_dofs)
 
-Applies sliding boundary conditions to the specified nodes,
+Creates a ConstraintHandler for sliding boundary conditions,
 allowing movement only in certain directions.
+
+Note: The constraints are NOT applied to K and f here. They will be applied
+once in solve_system() to avoid double application.
 
 Parameters:
 
-  - `K`: global stiffness matrix
-  - `f`: global load vector
+  - `K`: global stiffness matrix (passed for API consistency, not modified)
+  - `f`: global load vector (passed for API consistency, not modified)
   - `dh`: DofHandler
   - `nodes`: Set or Array of node IDs for the sliding boundary
   - `fixed_dofs`: Array of direction indices to fix (1=x, 2=y, 3=z)
 
 Returns:
 
-  - ConstraintHandler with the applied constraints
+  - ConstraintHandler with the defined constraints (ready to be applied)
 """
 function apply_sliding_boundary!(K, f, dh, nodes, fixed_dofs)
     # Create constraint handler
     ch = ConstraintHandler(dh)
 
-    # Apply Dirichlet boundary conditions only for specified directions
+    # Define Dirichlet boundary conditions only for specified directions
     for d in fixed_dofs
         dbc = Dirichlet(:u, nodes, (x, t) -> 0.0, d)
         add!(ch, dbc)
@@ -307,10 +365,10 @@ function apply_sliding_boundary!(K, f, dh, nodes, fixed_dofs)
 
     close!(ch)
     update!(ch, 0.0)
-    apply!(K, f, ch)
+    # NOTE: Do NOT apply here - will be applied once in solve_system()
 
     println(
-        "Applied sliding boundary conditions to $(length(nodes)) nodes, fixing DOFs: $fixed_dofs",
+        "Defined sliding boundary conditions for $(length(nodes)) nodes, fixing DOFs: $fixed_dofs",
     )
     return ch
 end
@@ -456,6 +514,8 @@ end
 Solves the system of linear equations with multiple constraint handlers
 and calculates stresses.
 
+Constraints are applied here (single application point) using apply!().
+
 Parameters:
 
   - `K`: global stiffness matrix
@@ -473,12 +533,12 @@ Returns:
       + deformation energy
       + stress field dictionary
       + maximum von Mises stress value
-      + cell ID where the maximum stress occurs    # Apply zero value to constrained dofs for all constraint handlers
+      + cell ID where the maximum stress occurs
 """
 function solve_system(K, f, dh, cellvalues, λ, μ, constraints...)
-    # Apply zero value to constrained dofs for all constraint handlers
+    # Apply all constraint handlers to the system (SINGLE APPLICATION POINT)
     for ch in constraints
-        apply_zero!(K, f, ch)
+        apply!(K, f, ch)
     end
 
     println("Solving linear system...")
@@ -746,6 +806,8 @@ end
 Solves the system of linear equations with multiple constraint handlers
 and calculates stresses, using variable material properties.
 
+Constraints are applied here (single application point) using apply!().
+
 Parameters:
 
   - `K`: global stiffness matrix
@@ -764,7 +826,7 @@ Returns:
       + deformation energy
       + stress field dictionary
       + maximum von Mises stress value
-      + cell ID where the maximum stress occurs    # Apply zero value to constrained dofs for all constraint handlers
+      + cell ID where the maximum stress occurs
 """
 function solve_system_simp(
     K,
@@ -775,9 +837,9 @@ function solve_system_simp(
     density_data,
     constraints...,
 )
-    # Apply zero value to constrained dofs for all constraint handlers
+    # Apply all constraint handlers to the system (SINGLE APPLICATION POINT)
     for ch in constraints
-        apply_zero!(K, f, ch)
+        apply!(K, f, ch)
     end
 
     println("Solving linear system...")
