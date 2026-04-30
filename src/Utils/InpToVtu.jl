@@ -483,5 +483,3 @@ function test_conversion(inp_file::String = "test.inp")
         println("❌ Test failed!")
     end
 end
-
-InpToVtu("stul14.inp", "stul14")
