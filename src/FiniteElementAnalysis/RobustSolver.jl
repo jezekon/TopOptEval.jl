@@ -31,6 +31,7 @@ struct SolverConfig
     restart::Int                # GMRES restart parameter
     drop_tolerance::Float64     # ILU/IChol drop tolerance
     history::Bool               # Store convergence history
+    allow_unconverged::Bool     # Return a non-converged iterative solution instead of an error
 end
 
 # Default configuration constructor
@@ -44,6 +45,7 @@ function SolverConfig(;
     restart::Int = 30,
     drop_tolerance::Float64 = 1e-4,
     history::Bool = false,
+    allow_unconverged::Bool = false,
 )
     # Set default max_iterations based on expected problem size
     if max_iterations == 0
@@ -60,6 +62,7 @@ function SolverConfig(;
         restart,
         drop_tolerance,
         history,
+        allow_unconverged,
     )
 end
 
@@ -416,6 +419,8 @@ function solve_with_krylov(K, f, method, config, matrix_props)
         end
     end
 
+    final_residual = nothing
+
     # Enhanced reporting with convergence analysis
     if config.verbose
         println("-"^60)
@@ -480,13 +485,13 @@ function solve_with_krylov(K, f, method, config, matrix_props)
         println("="^60)
     end
 
-    # Enhanced warning for non-convergence with suggestions
+    # A non-converged solution is not a result: stop, with suggestions
     if hasfield(typeof(stats), :solved) && !stats.solved
         actual_residual = norm(K * u - f)
         final_residual_val = final_residual !== nothing ? final_residual : actual_residual
         niter_val = hasfield(typeof(stats), :niter) ? stats.niter : "unknown"
 
-        @warn """
+        message = """
         Krylov solver did not converge after $niter_val iterations.
 
         Final residual: $final_residual_val
@@ -497,10 +502,13 @@ function solve_with_krylov(K, f, method, config, matrix_props)
         1. Increase max_iterations (current: $(config.max_iterations))
         2. Relax tolerance (try $(config.tolerance * 100))
         3. Try different preconditioner (current: $(config.preconditioner))
-        4. Try different method (current: $method, try :cg or :bicgstab)
+        4. Try different method (current: $method, try :cg or :bicgstab, or :direct)
         5. Check matrix conditioning
         6. Verify boundary conditions are properly applied
+        7. Set allow_unconverged = true in SolverConfig to get this solution anyway
         """
+
+        config.allow_unconverged ? (@warn message) : error(message)
     end
 
     return u, stats
@@ -611,8 +619,8 @@ function solve_system_robust(
         println("\n" * "="^60)
         println("FINAL ANALYSIS RESULTS")
         println("="^60)
-        println("Deformation energy: $(round(deformation_energy, digits=6)) J")
-        println("Maximum von Mises stress: $(round(max_von_mises, digits=2)) Pa")
+        println("Deformation energy: $(round(deformation_energy, digits=6)) $ENERGY_UNIT_LABEL")
+        println("Maximum von Mises stress: $(round(max_von_mises, digits=2))")
         println("Max stress location: cell $(max_stress_cell)")
         println("="^60)
     end
@@ -724,8 +732,8 @@ function solve_system_robust_simp(
         println("\n" * "="^60)
         println("FINAL ANALYSIS RESULTS (SIMP)")
         println("="^60)
-        println("Deformation energy: $(round(deformation_energy, digits=6)) J")
-        println("Maximum von Mises stress: $(round(max_von_mises, digits=2)) Pa")
+        println("Deformation energy: $(round(deformation_energy, digits=6)) $ENERGY_UNIT_LABEL")
+        println("Maximum von Mises stress: $(round(max_von_mises, digits=2))")
         println("Max stress location: cell $(max_stress_cell)")
         println("="^60)
     end

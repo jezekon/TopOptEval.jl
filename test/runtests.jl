@@ -88,4 +88,6 @@ end
         export_results(stress_field, dh, "$(taskName)_stress")
     end
 
+    include("VolumeForces/testVolumeForces.jl")
+    include("Regressions/testRecomputeFixes.jl")
 end

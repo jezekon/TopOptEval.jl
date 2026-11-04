@@ -195,8 +195,9 @@ function apply_variable_density_volume_force!(
         cell_id = cellid(cell)
         density = density_data[cell_id]
 
-        # Skip if density is negligible (for SIMP optimization)
-        if density < 1e-6
+        # Skip only empty cells. density_data is rho_e * material density (e.g. 1e-9 t/mm^3),
+        # so an absolute threshold such as 1e-6 would drop every cell.
+        if density <= 0.0
             continue
         end
 

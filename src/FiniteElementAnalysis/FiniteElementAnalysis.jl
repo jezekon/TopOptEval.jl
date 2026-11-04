@@ -23,6 +23,9 @@ export create_material_model,
     solve_system_simp,
     solve_system_adaptive
 
+# The package does not fix a system of units: energy comes out in force x length.
+const ENERGY_UNIT_LABEL = "force·length (mJ for N-mm-MPa, J for N-m-Pa)"
+
 # =============================================================================
 # SHARED FACE CONNECTIVITY DEFINITIONS
 # =============================================================================
@@ -160,11 +163,14 @@ function setup_problem(grid::Grid, interpolation_order::Int = 1)
     if cell_type <: Ferrite.Hexahedron
         println("Setting up problem with hexahedral elements")
         ip = Lagrange{RefHexahedron,interpolation_order}()^dim  # vector interpolation for hexahedrons
-        qr = QuadratureRule{RefHexahedron}(2)  # quadrature rule for hexahedrons
+        # Gauss rule with order + 1 points per direction: 2 points leave a Q2 element with
+        # spurious zero-energy modes
+        qr = QuadratureRule{RefHexahedron}(interpolation_order + 1)
     else  # Default to tetrahedron
         println("Setting up problem with tetrahedral elements")
         ip = Lagrange{RefTetrahedron,interpolation_order}()^dim  # vector interpolation for tetrahedrons
-        qr = QuadratureRule{RefTetrahedron}(2)  # quadrature rule for tetrahedrons
+        # Exact for the stiffness of a straight-sided Pk tetrahedron, degree 2(k - 1)
+        qr = QuadratureRule{RefTetrahedron}(max(2, 2 * (interpolation_order - 1)))
     end
 
     # Create cell values
@@ -252,7 +258,8 @@ end
 """
     get_node_dofs(dh::DofHandler)
 
-Creates a mapping from node IDs to their corresponding DOFs.
+Creates a mapping from mesh nodes (cell vertices) to their DOFs. The edge and interior DOFs
+of a higher-order field belong to no mesh node and are not in the mapping.
 
 Parameters:
 
@@ -265,15 +272,14 @@ Returns:
 function get_node_dofs(dh::DofHandler)
     node_to_dofs = Dict{Int,Vector{Int}}()
 
+    # 3D vector field. A cell's DOFs start vertex by vertex, three per vertex, whatever the
+    # order of the field; the DOFs of edges and of the interior follow.
+    dofs_per_node = 3
+
     # For each cell, get the mapping of nodes to DOFs
     for cell in CellIterator(dh)
         cell_nodes = cell.nodes
         cell_dofs = celldofs(cell)
-
-        # Assume that for each node we have 'dim' DOFs (one for each direction)
-        # and they are arranged sequentially for each node
-        nodes_per_cell = length(cell_nodes)
-        dofs_per_node = length(cell_dofs) ÷ nodes_per_cell
 
         # For each node in the cell
         for (local_node_idx, global_node_idx) in enumerate(cell_nodes)
@@ -290,6 +296,56 @@ function get_node_dofs(dh::DofHandler)
     end
 
     return node_to_dofs
+end
+
+"""
+    add_node_constraints!(ch, dh, nodes, components)
+
+Adds zero Dirichlet conditions on `nodes` for the given displacement `components`.
+
+A node set reaches only the vertex DOFs. In a higher-order field this would leave the edge
+DOFs of a clamped face free, so these fields are constrained on the facets whose vertices all
+are in `nodes`, and only the remaining nodes as nodes.
+
+Parameters:
+
+  - `ch`: ConstraintHandler (modified in-place)
+  - `dh`: DofHandler
+  - `nodes`: Set or Array of node IDs
+  - `components`: Displacement components to constrain (1=x, 2=y, 3=z)
+
+Returns:
+
+  - nothing (modifies ch in-place)
+"""
+function add_node_constraints!(ch, dh, nodes, components)
+    grid = dh.grid
+
+    if ndofs_per_cell(dh) == 3 * length(getcells(grid, 1).nodes)
+        # Every DOF sits on a mesh node
+        for d in components
+            add!(ch, Dirichlet(:u, nodes, (x, t) -> 0.0, d))
+        end
+        return nothing
+    end
+
+    node_set = Set{Int}(nodes)
+    facets = get_boundary_facets(grid, node_set)
+
+    remaining = copy(node_set)
+    for (cell_id, face_id) in facets
+        cell = getcells(grid, cell_id)
+        for i in get_face_nodes(cell)[face_id]
+            delete!(remaining, cell.nodes[i])
+        end
+    end
+
+    facet_set = Set(FacetIndex(cell_id, face_id) for (cell_id, face_id) in facets)
+    for d in components
+        isempty(facet_set) || add!(ch, Dirichlet(:u, facet_set, (x, t) -> 0.0, d))
+        isempty(remaining) || add!(ch, Dirichlet(:u, remaining, (x, t) -> 0.0, d))
+    end
+    return nothing
 end
 
 """
@@ -319,10 +375,7 @@ function apply_fixed_boundary!(K, f, dh, nodes)
 
     # Define Dirichlet boundary conditions for fixed nodes
     # Fix each component individually
-    for d = 1:dim
-        dbc = Dirichlet(:u, nodes, (x, t) -> 0.0, d)
-        add!(ch, dbc)
-    end
+    add_node_constraints!(ch, dh, nodes, 1:dim)
 
     close!(ch)
     update!(ch, 0.0)
@@ -358,10 +411,7 @@ function apply_sliding_boundary!(K, f, dh, nodes, fixed_dofs)
     ch = ConstraintHandler(dh)
 
     # Define Dirichlet boundary conditions only for specified directions
-    for d in fixed_dofs
-        dbc = Dirichlet(:u, nodes, (x, t) -> 0.0, d)
-        add!(ch, dbc)
-    end
+    add_node_constraints!(ch, dh, nodes, fixed_dofs)
 
     close!(ch)
     update!(ch, 0.0)
@@ -554,7 +604,7 @@ function solve_system(K, f, dh, cellvalues, λ, μ, constraints...)
         calculate_stresses(u, dh, cellvalues, λ, μ)
 
     println("Analysis complete")
-    println("Deformation energy: $deformation_energy J")
+    println("Deformation energy: $deformation_energy $ENERGY_UNIT_LABEL")
     println("Maximum von Mises stress: $max_von_mises at cell $max_stress_cell")
 
     return u, deformation_energy, stress_field, max_von_mises, max_stress_cell
@@ -565,7 +615,8 @@ end
     solve_system_adaptive(K, f, dh, cellvalues, λ, μ, constraints...)
 
 Adaptive solver that automatically chooses between original and robust solver
-based on problem size.
+based on problem size. If the iterative solver of a large problem does not converge, this is
+an error (see `allow_unconverged` of `SolverConfig`).
 """
 function solve_system_adaptive(K, f, dh, cellvalues, λ, μ, constraints...)
     n = size(K, 1)
@@ -598,16 +649,21 @@ function solve_system_adaptive(K, f, dh, cellvalues, λ, μ, constraints...)
 end
 
 """
-    create_simp_material_model(E0::Float64, nu::Float64, Emin::Float64=1e-9, p::Float64=3.0)
+    create_simp_material_model(E0::Float64, nu::Float64, Emin::Float64=1e-9*E0, p::Float64=3.0;
+                               rho_lin::Float64=0.0)
 
-Creates a material model using the SIMP (Solid Isotropic Material with Penalization) approach.
+Creates a material model using the SIMP (Solid Isotropic Material with Penalization) approach:
+E(ρ) = Emin + (E0 - Emin) g(ρ), with g(ρ) = ρ^p, and g(ρ) = rho_lin^(p-1) ρ below `rho_lin`.
 
 Parameters:
 
   - `E0`: Base material Young's modulus
   - `nu`: Poisson's ratio
-  - `Emin`: Minimum Young's modulus (default: 1e-9)
+  - `Emin`: Minimum Young's modulus (default: 1e-9 * E0)
   - `p`: Penalization power (default: 3.0)
+  - `rho_lin`: Below this density the interpolation is linear and continuous at `rho_lin`
+    (default: 0, plain SIMP). Used with a body force proportional to the density, where the
+    optimization has to be evaluated with the same interpolation (Bruyneel & Duysinx 2005).
 
 Returns:
 
@@ -616,12 +672,14 @@ Returns:
 function create_simp_material_model(
     E0::Float64,
     nu::Float64,
-    Emin::Float64 = 1e-6,
-    p::Float64 = 1.0,
+    Emin::Float64 = 1e-9 * E0,
+    p::Float64 = 3.0;
+    rho_lin::Float64 = 0.0,
 )
     function material_for_density(density::Float64)
-        # SIMP model: E(ρ) = Emin + (E0 - Emin) * ρ^p
-        E = Emin + (E0 - Emin) * density^p
+        # SIMP model: E(ρ) = Emin + (E0 - Emin) * g(ρ)
+        g = density < rho_lin ? rho_lin^(p - 1) * density : density^p
+        E = Emin + (E0 - Emin) * g
 
         # Calculate Lamé parameters
         λ = E * nu / ((1 + nu) * (1 - 2 * nu))
@@ -855,7 +913,7 @@ function solve_system_simp(
         calculate_stresses_simp(u, dh, cellvalues, material_model, density_data)
 
     println("Analysis complete")
-    println("Deformation energy: $deformation_energy J")
+    println("Deformation energy: $deformation_energy $ENERGY_UNIT_LABEL")
     println("Maximum von Mises stress: $max_von_mises at cell $max_stress_cell")
 
     return u, deformation_energy, stress_field, max_von_mises, max_stress_cell

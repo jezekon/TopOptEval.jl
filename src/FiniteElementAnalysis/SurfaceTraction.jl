@@ -173,10 +173,8 @@ function apply_surface_traction!(
     cell_type = typeof(getcells(grid, 1))
 
     if cell_type <: Ferrite.Hexahedron
-        ip = Lagrange{RefHexahedron,1}()^3
         qr_face = FacetQuadratureRule{RefHexahedron}(2)
     elseif cell_type <: Ferrite.Tetrahedron
-        ip = Lagrange{RefTetrahedron,1}()^3
         qr_face = FacetQuadratureRule{RefTetrahedron}(2)
     else
         error(
@@ -184,7 +182,8 @@ function apply_surface_traction!(
         )
     end
 
-    facevalues = FacetValues(qr_face, ip)
+    # The interpolation of the field, so that the element vector matches its cell DOFs at any order
+    facevalues = FacetValues(qr_face, Ferrite.getfieldinterpolation(dh, (1, 1)))
 
     n_basefuncs = getnbasefunctions(facevalues)
     fe = zeros(n_basefuncs)

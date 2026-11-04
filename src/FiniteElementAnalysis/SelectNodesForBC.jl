@@ -15,6 +15,11 @@ using LinearAlgebra
 # Note: get_face_nodes is defined in parent module (FiniteElementAnalysis.jl)
 # and is available here without explicit import
 
+# Default distance tolerance of the node selection, in mesh length units. It only has to absorb
+# round-off and the node alignment of the extracted meshes (|x - plane| < 1e-3 mm). A larger
+# value turns a face into a band of surface nodes: over-constrained supports, smeared loads.
+const DEFAULT_SELECTION_TOLERANCE = 1e-3
+
 """
     SurfaceNodeCache
 
@@ -70,9 +75,10 @@ function extract_surface_nodes!(cache::SurfaceNodeCache, grid::Grid)
 
         # Process each face
         for face_nodes in faces
-            # Sort node IDs to create a canonical representation of the face
-            # This ensures that faces shared by two elements are properly counted
-            sorted_face = Tuple(sort(collect(face_nodes)))
+            # get_face_nodes returns LOCAL node indices; map them to global node IDs,
+            # then sort to create a canonical representation of the face. This ensures
+            # that faces shared by two elements are properly counted.
+            sorted_face = Tuple(sort([cell.nodes[i] for i in face_nodes]))
 
             # Count how many elements this face belongs to
             face_count[sorted_face] = get(face_count, sorted_face, 0) + 1
@@ -126,7 +132,7 @@ end
     select_surface_nodes_by_plane(cache::SurfaceNodeCache,
                                   point::Vector{Float64}, 
                                   normal::Vector{Float64}, 
-                                  tolerance::Float64=1.0)
+                                  tolerance::Float64=1e-3)
 
 Optimized version that selects surface nodes lying on a plane defined by point and normal.
 Only considers nodes that are already identified as surface nodes.
@@ -135,7 +141,7 @@ Parameters:
 - `cache::SurfaceNodeCache`: Pre-computed surface node data
 - `point::Vector{Float64}`: A point on the plane [x, y, z]
 - `normal::Vector{Float64}`: Normal vector to the plane [nx, ny, nz]
-- `tolerance::Float64`: Distance tolerance for node selection
+- `tolerance::Float64`: Distance tolerance for node selection, in mesh length units (default: 1e-3)
 
 Returns:
 - `Set{Int}`: Set of surface node IDs that lie on the specified plane
@@ -147,7 +153,7 @@ function select_surface_nodes_by_plane(
     cache::SurfaceNodeCache,
     point::Vector{Float64},
     normal::Vector{Float64},
-    tolerance::Float64 = 1.0,
+    tolerance::Float64 = DEFAULT_SELECTION_TOLERANCE,
 )
     # Validate that cache has been computed
     if !cache.computed
@@ -192,7 +198,7 @@ end
                                    center::Vector{Float64}, 
                                    normal::Vector{Float64}, 
                                    radius::Float64, 
-                                   tolerance::Float64=1.0)
+                                   tolerance::Float64=1e-3)
 
 Optimized version that selects surface nodes within a circular region defined by 
 center, normal vector, and radius. Only considers surface nodes.
@@ -202,7 +208,7 @@ Parameters:
 - `center::Vector{Float64}`: Center of the circle [x, y, z]
 - `normal::Vector{Float64}`: Normal vector to the plane containing the circle [nx, ny, nz]
 - `radius::Float64`: Radius of the circle
-- `tolerance::Float64`: Distance tolerance for node selection
+- `tolerance::Float64`: Distance tolerance for node selection, in mesh length units (default: 1e-3)
 
 Returns:
 - `Set{Int}`: Set of surface node IDs that lie within the circular region
@@ -215,7 +221,7 @@ function select_surface_nodes_by_circle(
     center::Vector{Float64},
     normal::Vector{Float64},
     radius::Float64,
-    tolerance::Float64 = 1.0,
+    tolerance::Float64 = DEFAULT_SELECTION_TOLERANCE,
 )
     # Validate that cache has been computed
     if !cache.computed
@@ -267,14 +273,17 @@ end
 
 # Convenience functions with automatic caching for backward compatibility
 
-# Global cache storage for automatic caching (one cache per grid)
-const GRID_CACHE_STORAGE = Dict{UInt,SurfaceNodeCache}()
+# Global cache storage for automatic caching (one cache per grid). The key is the grid object
+# itself, held weakly: hash(grid) is derived from the object's address, which a new grid can
+# get after the old one is garbage collected, and the new grid would then receive the surface
+# nodes of the old one. An entry disappears together with its grid.
+const GRID_CACHE_STORAGE = WeakKeyDict{Grid,SurfaceNodeCache}()
 
 """
     get_or_create_cache(grid::Grid)
 
 Internal function to get or create a surface node cache for a given grid.
-Uses grid object hash as key for caching.
+The grid object itself is the key. After changing a grid in place, call `clear_surface_cache!`.
 
 Parameters:
 - `grid::Grid`: Ferrite mesh
@@ -283,12 +292,9 @@ Returns:
 - `SurfaceNodeCache`: Cache object (computed if necessary)
 """
 function get_or_create_cache(grid::Grid)
-    # Use grid object hash as unique identifier
-    grid_hash = hash(grid)
-
     # Return existing cache or create new one
-    if haskey(GRID_CACHE_STORAGE, grid_hash)
-        cache = GRID_CACHE_STORAGE[grid_hash]
+    if haskey(GRID_CACHE_STORAGE, grid)
+        cache = GRID_CACHE_STORAGE[grid]
         if !cache.computed
             extract_surface_nodes!(cache, grid)
         end
@@ -297,7 +303,7 @@ function get_or_create_cache(grid::Grid)
         # Create new cache and compute surface nodes
         cache = SurfaceNodeCache()
         extract_surface_nodes!(cache, grid)
-        GRID_CACHE_STORAGE[grid_hash] = cache
+        GRID_CACHE_STORAGE[grid] = cache
         return cache
     end
 end
@@ -306,7 +312,7 @@ end
     select_nodes_by_plane(grid::Grid, 
                           point::Vector{Float64}, 
                           normal::Vector{Float64}, 
-                          tolerance::Float64=1.0)
+                          tolerance::Float64=1e-3)
 
 Backward-compatible convenience function that automatically manages surface node caching.
 This version maintains the same interface as the original function.
@@ -315,7 +321,7 @@ Parameters:
 - `grid::Grid`: Computational mesh
 - `point::Vector{Float64}`: A point on the plane [x, y, z]
 - `normal::Vector{Float64}`: Normal vector to the plane [nx, ny, nz]  
-- `tolerance::Float64`: Distance tolerance for node selection
+- `tolerance::Float64`: Distance tolerance for node selection, in mesh length units (default: 1e-3)
 
 Returns:
 - `Set{Int}`: Set of surface node IDs that lie on the specified plane
@@ -324,7 +330,7 @@ function select_nodes_by_plane(
     grid::Grid,
     point::Vector{Float64},
     normal::Vector{Float64},
-    tolerance::Float64 = 1.0,
+    tolerance::Float64 = DEFAULT_SELECTION_TOLERANCE,
 )
     # Get or create cache automatically
     cache = get_or_create_cache(grid)
@@ -338,7 +344,7 @@ end
                            center::Vector{Float64}, 
                            normal::Vector{Float64}, 
                            radius::Float64, 
-                           tolerance::Float64=1.0)
+                           tolerance::Float64=1e-3)
 
 Backward-compatible convenience function that automatically manages surface node caching.
 This version maintains the same interface as the original function.
@@ -348,7 +354,7 @@ Parameters:
 - `center::Vector{Float64}`: Center of the circle [x, y, z]
 - `normal::Vector{Float64}`: Normal vector to the plane containing the circle [nx, ny, nz]
 - `radius::Float64`: Radius of the circle
-- `tolerance::Float64`: Distance tolerance for node selection
+- `tolerance::Float64`: Distance tolerance for node selection, in mesh length units (default: 1e-3)
 
 Returns:
 - `Set{Int}`: Set of surface node IDs that lie within the circular region
@@ -358,7 +364,7 @@ function select_nodes_by_circle(
     center::Vector{Float64},
     normal::Vector{Float64},
     radius::Float64,
-    tolerance::Float64 = 1.0,
+    tolerance::Float64 = DEFAULT_SELECTION_TOLERANCE,
 )
     # Get or create cache automatically
     cache = get_or_create_cache(grid)
