@@ -1,6 +1,5 @@
-# Regression tests for the fixes made for the dissertation recompute: node selection, surface
-# node cache, SIMP material model, body force, higher-order fields, non-converged solves and
-# the energy label.
+# Regression tests for these fixes: node selection, surface node cache, SIMP material model,
+# body force, higher-order fields, non-converged solves and the energy label.
 using Ferrite
 using LinearAlgebra
 using TopOptEval.FiniteElementAnalysis: get_or_create_cache, clear_surface_cache!
@@ -108,7 +107,7 @@ end
     @testset "SIMP material model" begin
         E0, nu = 2400.0, 0.35
 
-        # Defaults of the thesis: p = 3, Emin = 1e-9 E0
+        # Defaults: p = 3, Emin = 1e-9 E0
         material = create_simp_material_model(E0, nu)
         @test young(material, 1.0, nu) ≈ E0
         @test young(material, 0.0, nu) ≈ 1e-9 * E0
