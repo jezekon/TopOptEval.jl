@@ -15,6 +15,8 @@ using .Utils
 
 # Re-export commonly used functions for convenience
 export import_mesh,
+    read_stl_triangles,
+    tetrahedralize_stl,
     create_material_model,
     setup_problem,
     assemble_stiffness_matrix!,

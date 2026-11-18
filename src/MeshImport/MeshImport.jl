@@ -3,7 +3,10 @@ module MeshImport
 using Ferrite
 using FerriteGmsh  # Required for parsing GMSH (.msh) files
 using ReadVTK      # Required for parsing VTK XML formats (.vtu files)
-export import_mesh, extract_cell_density
+import TetGen      # Required for meshing STL surfaces (tetrahedralize_stl)
+export import_mesh, extract_cell_density, read_stl_triangles, tetrahedralize_stl
+
+include("StlTetrahedralization.jl")
 
 """
     import_mesh(mesh_file::String)

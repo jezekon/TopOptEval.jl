@@ -90,4 +90,5 @@ end
 
     include("VolumeForces/testVolumeForces.jl")
     include("Regressions/testRecomputeFixes.jl")
+    include("StlMeshing/testStlTetrahedralization.jl")
 end
