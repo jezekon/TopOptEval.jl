@@ -63,7 +63,7 @@ function read_stl_triangles(stl_file::String)
 end
 
 """
-    tetrahedralize_stl(stl_file::String; switches::String = "pQ", hole_points = Vec{3,Float64}[]) -> Grid
+    tetrahedralize_stl(stl_file::String; switches::String = "pYQ", hole_points = Vec{3,Float64}[]) -> Grid
 
 Tetrahedral mesh of the volume inside the closed surface of an STL file, made by TetGen.
 1. Read the triangles (`read_stl_triangles`).
@@ -71,9 +71,12 @@ Tetrahedral mesh of the volume inside the closed surface of an STL file, made by
 3. Tetrahedralization with the switches.
 4. Ferrite grid of linear tetrahedra, with the points and the node order of TetGen.
 
-The switch `p` meshes the closed surface (a piecewise linear complex), `Q` silences TetGen. Other switches are
-those of the program `tetgen`, for example `q` for a quality mesh. Without hole points, TetGen fills a closed cavity
-with tetrahedra. One point inside the cavity keeps it empty.
+The default switches `pYQ` mesh the closed surface (`p`, a piecewise linear complex), keep the triangles of the
+surface as they are (`Y`) and silence TetGen (`Q`). The surface of the mesh is then the surface of the STL file. Without
+`Y`, TetGen joins adjacent triangles that lie nearly in one plane and splits them again along other diagonals, so the
+points stay but some triangles of the surface change. Other switches are those of the program `tetgen`, for example
+`q` for a quality mesh. Without hole points, TetGen fills a closed cavity with tetrahedra. One point inside the cavity
+keeps it empty.
 
 # Arguments
 - `stl_file`: path to the STL file with a closed triangle surface
@@ -85,7 +88,7 @@ with tetrahedra. One point inside the cavity keeps it empty.
 """
 function tetrahedralize_stl(
     stl_file::String;
-    switches::String = "pQ",
+    switches::String = "pYQ",
     hole_points = Vec{3,Float64}[],
 )
     # 1. Triangles of the STL file
